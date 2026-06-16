@@ -103,3 +103,51 @@ class SLModule:
             scores[hyp] = w
 
         return scores
+
+    def score_many(
+        self,
+        items: list[tuple[str, list[str]]],
+        level: str = "country",
+    ) -> list[dict[str, float]]:
+        """
+        Score multiple (evidence_desc, hypotheses) pairs in ONE big GPU batch.
+
+        Builds a flat list of all (evidence, hypothesis) prompts across every
+        item, sends them as one batch_sample_n call, then routes responses
+        back to per-item score dicts.
+
+        This is the path that lets GPU utilization stay high: instead of
+        N images × M hypotheses × n_samples scattered into N small forwards,
+        we fire one giant forward with sum(M_i) × n_samples inputs.
+        """
+        from config import MAX_SL_BATCH_SIZE
+
+        flat_msgs: list = []
+        owners: list[tuple[int, str]] = []  # (item_idx, hyp_name)
+        for item_idx, (evidence, hyps) in enumerate(items):
+            for hyp in hyps:
+                flat_msgs.append(self._make_prompt(evidence, hyp, level))
+                owners.append((item_idx, hyp))
+
+        if not flat_msgs:
+            return [dict() for _ in items]
+
+        flat_responses: list[list[str]] = []
+        for i in range(0, len(flat_msgs), MAX_SL_BATCH_SIZE):
+            batch = flat_msgs[i:i + MAX_SL_BATCH_SIZE]
+            flat_responses.extend(self.mllm.batch_sample_n(batch, n=self.n_samples))
+
+        results: list[dict[str, float]] = [dict() for _ in items]
+        for (item_idx, hyp), responses in zip(owners, flat_responses):
+            parsed = [_parse_ct_alpha(r) for r in responses]
+            cs     = np.array([p[0] for p in parsed])
+            alphas = np.array([p[1] for p in parsed])
+
+            c_mean = cs.mean()
+            c_std  = cs.std()
+            a_mean = alphas.mean()
+
+            w = math.exp(a_mean * BETA * (c_mean - 3) * max(0.0, 1.0 - self.lam * c_std))
+            results[item_idx][hyp] = w
+
+        return results

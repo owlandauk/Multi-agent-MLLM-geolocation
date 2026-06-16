@@ -291,10 +291,16 @@ class GeoPipeline:
                 verify_resps = self.mllm.batch_generate(verify_msgs, max_new_tokens=256)
                 evidence_descs = {i: resp for i, resp in zip(active, verify_resps)}
 
-                # ── SL scoring + DST fusion (CPU, per image) ───────────────────
-                for i in active:
-                    hyps     = list(posteriors[i].keys())
-                    w_scores = self.sl.score(evidence_descs[i], hyps, level)
+                # ── SL scoring: ONE big batch across all active images ──────────
+                sl_items = [
+                    (evidence_descs[i], list(posteriors[i].keys()))
+                    for i in active
+                ]
+                sl_results = self.sl.score_many(sl_items, level)
+
+                # ── DST fusion (CPU, per image) ────────────────────────────────
+                for k, i in enumerate(active):
+                    w_scores = sl_results[k]
                     ev_scores_all[i].append(w_scores)
                     posteriors[i] = self.dst.fuse(priors[i], ev_scores_all[i])
 
