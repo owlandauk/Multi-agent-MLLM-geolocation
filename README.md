@@ -57,6 +57,21 @@ export MODEL_PATH=/path/to/Qwen2.5-VL-7B-Instruct
 CUDA_VISIBLE_DEVICES=0 python geo_pipeline/evaluate.py --batch_size 4 --out results/run1.json
 ```
 
+### vLLM backend (recommended for the 4× 11GB CVHCI server)
+
+vLLM shards each transformer layer across all 4 GPUs (tensor parallelism)
+and adds PagedAttention + continuous batching, both of which keep the GPUs
+much busier than `device_map="auto"` pipeline-parallel under transformers.
+
+```bash
+pip install "vllm>=0.6.3"
+export MLLM_BACKEND=vllm
+export MODEL_PATH=/cvhci/temp/szuo/models/qwen2.5-vl-7b
+export VLLM_TP=4   # default; matches the 4-GPU server
+CUDA_VISIBLE_DEVICES=0,1,2,3 python geo_pipeline/evaluate.py \
+    --batch_size 20 --out results/run_vllm.json
+```
+
 Resume from a checkpoint:
 
 ```bash

@@ -6,3 +6,4 @@ tqdm
 geopy
 qwen-vl-utils
 dashscope
+vllm>=0.6.3
