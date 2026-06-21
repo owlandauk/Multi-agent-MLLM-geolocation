@@ -41,9 +41,11 @@ def likelihood_to_bba(
     hyps = list(w_scores.keys())
     ws   = np.array([w_scores[h] for h in hyps], dtype=float)
 
-    # softmax converts unnormalized likelihoods to a probability simplex
-    ws_exp = np.exp(ws - ws.max())
-    probs  = ws_exp / ws_exp.sum()
+    # W scores are already exp-scaled likelihoods — L1-normalise directly.
+    # A second softmax would compress Country/Continent-level gaps where W
+    # values are close (e.g. 1.3 vs 1.1), making the posterior nearly uniform.
+    ws_clipped = np.clip(ws, 1e-9, None)
+    probs = ws_clipped / ws_clipped.sum()
 
     bba = {h: float(p) * (1.0 - base_ignorance) for h, p in zip(hyps, probs)}
     bba[theta_key] = base_ignorance
@@ -63,7 +65,7 @@ def dempster_combine(bba1: dict, bba2: dict, cautious_threshold: float = DST_CON
     combined[theta] = 0.0
     K = 0.0  # conflict mass
 
-    all_keys = hyps + [theta]
+    all_keys = hyps + [theta]  # noqa: F841
 
     for k1, m1 in bba1.items():
         for k2, m2 in bba2.items():

@@ -101,7 +101,8 @@ class SLModule:
             c_std   = cs.std()
             a_mean  = alphas.mean()
 
-            w = math.exp(a_mean * BETA * (c_mean - 3) * max(0.0, 1.0 - self.lam * c_std))
+            uncertainty_factor = max(0.3, 1.0 - self.lam * c_std)
+            w = math.exp(a_mean * BETA * (c_mean - 3) * uncertainty_factor)
             scores[hyp] = w
 
         return scores
@@ -151,7 +152,8 @@ class SLModule:
             c_std  = cs.std()
             a_mean = alphas.mean()
 
-            w = math.exp(a_mean * BETA * (c_mean - 3) * max(0.0, 1.0 - self.lam * c_std))
+            uncertainty_factor = max(0.3, 1.0 - self.lam * c_std)
+            w = math.exp(a_mean * BETA * (c_mean - 3) * uncertainty_factor)
             results[item_idx][hyp] = w
 
         return results
