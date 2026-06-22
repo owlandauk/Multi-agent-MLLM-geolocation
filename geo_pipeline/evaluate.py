@@ -95,6 +95,24 @@ def geocode(location_name: str):
     return None
 
 
+def _geocode_with_country(name: str, country: str | None):
+    """Try name verbatim first, then 'name, country' as a disambiguator.
+
+    Common Nominatim failure: ambiguous toponyms (a dozen 'Springfield's, two
+    'Naples', etc.) return None or the wrong one. Qualifying with the predicted
+    country shrinks the search space dramatically and usually picks the right
+    one. Only retries with the qualifier when (a) bare lookup failed and (b) a
+    plausible country is available.
+    """
+    coords = geocode(name)
+    if coords is not None:
+        return coords
+    if country and country.lower() not in ("unknown", "") and country.lower() not in name.lower():
+        return geocode(f"{name}, {country}")
+    return None
+
+
+
 def _pred_to_coords(pred: dict) -> tuple | None:
     """
     Hierarchical fallback strategy:
@@ -129,7 +147,9 @@ def _pred_to_coords(pred: dict) -> tuple | None:
     for level in ["street", "city", "country"]:
         name = pred.get(level)
         if name and name != "Unknown":
-            coords = geocode(name)
+            # for street/city, qualify with the predicted country to disambiguate
+            qualifier = top_country if level in ("street", "city") else None
+            coords = _geocode_with_country(name, qualifier)
             if coords:
                 # If top country is uncertain AND top-2 candidates cross continents,
                 # the precise geocode is risky — fall back to continent centroid.

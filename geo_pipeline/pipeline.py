@@ -52,37 +52,98 @@ def _softmax_prior(scores: dict[str, float]) -> dict[str, float]:
 
 # ── Prompt builders ────────────────────────────────────────────────────────────
 
-def _hypothesize_prompt(image: Image.Image, level: str, context: str = "") -> list:
+def _pre_analysis_prompt(image: Image.Image) -> list:
     """
-    Country-level prompt fuses two ideas from the literature:
-      - GLOBE (NeurIPS-25, Fig. 2): force structured reasoning across 4 visual cue
-        categories BEFORE naming any country — prevents commitment to nearby-but-
-        wrong countries because the model has to enumerate cues first.
-      - GeoBayes (AAAI-26, Tab. 3): 5 country candidates is the sweet spot —
-        Top-5 country recall on YFCC4K = 74.3% (Top-1 = 50.7%). Listing more
-        than 5 dilutes probability mass; listing fewer drops recall.
+    Pre-analysis stage (training-free) executed BEFORE country hypothesize.
+    Combines three ideas from the literature:
+
+    - GeoChain (EMNLP-25, Q1): hemisphere is a near-free win. Sun azimuth
+      + vegetation biome → N/S hemisphere with ~95% reliability. This halves
+      the country search space and prevents catastrophic cross-hemisphere
+      errors (a major continent-level miss source).
+    - GeoChain locatability + IMAGEO-Bench failure regression: rural / indoor
+      / no-landmark images degrade geolocation by ~30-50%. Detect these
+      upfront and route to continent fallback instead of forcing a guess.
+    - GEO-R1 step 1 (Visual Cue Identification): solar elevation + shadows
+      as a cue for latitude band.
+
+    Returns a JSON dict the caller uses to (a) bias the country prior,
+    (b) optionally skip street-level inference.
+    """
+    return [
+        {
+            "role": "user",
+            "content": [
+                {"type": "image", "image": image},
+                {"type": "text", "text": (
+                    "Quick geographic pre-analysis. Look at the image and answer:\n"
+                    "1. Hemisphere — N or S? Use sun position, shadows, vegetation, "
+                    "season cues. Answer 'N', 'S', or 'unknown'.\n"
+                    "2. Climate band — tropical / arid / temperate / boreal / polar / unknown.\n"
+                    "3. Setting — urban / suburban / rural / natural / indoor.\n"
+                    "4. Locatability — high / medium / low. HIGH = clear landmarks, "
+                    "signage, distinctive architecture. LOW = generic interior, sky, "
+                    "ocean, featureless landscape, no readable text or unique features.\n"
+                    "5. Continent — your single best guess (Asia/Europe/Africa/"
+                    "North America/South America/Oceania), or 'unknown'.\n\n"
+                    "Respond with JSON only:\n"
+                    '{"hemisphere":"N|S|unknown", "climate":"<band>", '
+                    '"setting":"<type>", "locatability":"high|medium|low", '
+                    '"continent":"<name>"}'
+                )},
+            ],
+        }
+    ]
+
+
+def _hypothesize_prompt(image: Image.Image, level: str, context: str = "",
+                        pre: dict | None = None) -> list:
+    """
+    Country-level prompt now uses the GRE Suite 5-step cue framework (Section A.2,
+    p.21) which is broader than GLOBE's 4 cues — adds textual/script decoding and
+    transport mode. Imperative "must include hypothesis even with partial evidence"
+    clause from GRE + LLMGeo "Must" framing kills the refusal/Unknown failure mode.
 
     City/street levels follow GeoBayes (5 candidates, conditioned on parent context).
+    Pre-analysis (hemisphere/continent) is injected as soft prior context if available.
     """
     if level == "country":
+        pre_hint = ""
+        if pre:
+            hemi = pre.get("hemisphere", "unknown")
+            climate = pre.get("climate", "unknown")
+            cont = pre.get("continent", "unknown")
+            if hemi != "unknown" or cont != "unknown":
+                pre_hint = (
+                    f"\nPre-analysis hints (use as soft prior, not absolute truth): "
+                    f"hemisphere={hemi}, climate={climate}, continent guess={cont}.\n"
+                )
+
         instruction = (
-            "Step 1 — Analyze the image across these FOUR visual cue categories. "
-            "For each, briefly describe what you observe (one phrase each):\n"
-            "  (a) Architecture & building style\n"
-            "  (b) Signage & written language/script\n"
-            "  (c) Street layout, vegetation & terrain\n"
-            "  (d) License plates, road signs & vehicle types\n\n"
-            "Step 2 — Based on those cues, list the TOP 5 most likely countries "
-            "(across different regions if cues are ambiguous). For each, assign a "
-            "confidence in [0,1] that reflects how strongly the cues support it.\n\n"
-            "Step 3 — Build a verification plan: 4-6 short, specific tasks that "
-            "would DISTINGUISH between the candidates (not just confirm the top one). "
-            "Each task should target a specific bbox or visual feature."
+            "You MUST provide a country hypothesis list — do NOT respond with "
+            "'unknown' or refuse. Prioritize these FIVE analysis steps:\n"
+            "  (1) Architecture, infrastructure, street furniture.\n"
+            "  (2) Textual clues — decode the SCRIPT (Latin/Cyrillic/Arabic/"
+            "Han/Devanagari/Thai/Hangul/Hebrew/Greek) and any readable language "
+            "on signage, license plates, billboards. The script alone narrows "
+            "the country set dramatically.\n"
+            "  (3) Vegetation, biome and climate cues — match to regional climate bands.\n"
+            "  (4) Terrain, topography, coastline patterns.\n"
+            "  (5) Transportation modes — vehicle types, road markings, drive-side "
+            "(left in UK/Japan/Australia/India, right elsewhere).\n\n"
+            f"{pre_hint}"
+            "Then list the TOP 5 most likely countries with confidence in [0,1]. "
+            "Even with partial evidence, you must commit to 5 candidates ranked by "
+            "plausibility. Drive-side and script are particularly high-information "
+            "cues — weight them strongly.\n\n"
+            "Finally, build a 4-6 task verification plan that DISTINGUISHES between "
+            "the candidates (not just confirms the top one)."
         )
     elif level == "city":
         instruction = (
             "List the TOP 5 most likely cities given the parent country context. "
-            "Then build a 3-5 task verification plan that distinguishes between them."
+            "Then build a 3-5 task verification plan that distinguishes between them. "
+            "You MUST commit to a city list — do not say 'unknown'."
         )
     else:  # street
         instruction = (
@@ -100,12 +161,13 @@ def _hypothesize_prompt(image: Image.Image, level: str, context: str = "") -> li
                     + (f"\nPrior context: {context}\n" if context else "")
                     + "\nRespond with JSON only:\n"
                     '{\n'
-                    '  "cues": {"architecture": "<phrase>", "signage": "<phrase>", '
-                    '"layout": "<phrase>", "plates_signs": "<phrase>"},\n'
+                    '  "cues": {"architecture": "<phrase>", "script_language": "<phrase>", '
+                    '"vegetation_biome": "<phrase>", "terrain": "<phrase>", '
+                    '"transport": "<phrase>"},\n'
                     '  "hypotheses": [{"location": "<name>", "confidence": <0-1>}, ...],\n'
                     '  "verification_plan": [{"desc": "<what to check>", "bbox": [x,y,w,h] or null}, ...]\n'
                     '}\n'
-                    "Note: the 'cues' field is optional for city/street levels."
+                    "The 'cues' field is optional for city/street levels."
                 )},
             ],
         }
@@ -202,6 +264,140 @@ def _merge_geo_reasoner_seed(prior: dict[str, float],
     return {k: v / total for k, v in merged.items()}
 
 
+# Lightweight country → continent map. Used to align country candidates with
+# the pre-analysis continent guess. Covers the most common geolocation
+# benchmark countries; falls back to no boost on unknown countries.
+_COUNTRY_TO_CONTINENT = {
+    # Asia
+    "china": "Asia", "japan": "Asia", "south korea": "Asia", "korea": "Asia",
+    "north korea": "Asia", "india": "Asia", "pakistan": "Asia", "bangladesh": "Asia",
+    "thailand": "Asia", "vietnam": "Asia", "indonesia": "Asia", "malaysia": "Asia",
+    "singapore": "Asia", "philippines": "Asia", "taiwan": "Asia", "myanmar": "Asia",
+    "cambodia": "Asia", "laos": "Asia", "nepal": "Asia", "sri lanka": "Asia",
+    "mongolia": "Asia", "kazakhstan": "Asia", "uzbekistan": "Asia",
+    "iran": "Asia", "iraq": "Asia", "saudi arabia": "Asia", "uae": "Asia",
+    "israel": "Asia", "turkey": "Asia", "jordan": "Asia", "lebanon": "Asia",
+    "syria": "Asia", "qatar": "Asia", "kuwait": "Asia", "oman": "Asia",
+    # Europe
+    "germany": "Europe", "france": "Europe", "italy": "Europe", "spain": "Europe",
+    "portugal": "Europe", "united kingdom": "Europe", "uk": "Europe",
+    "england": "Europe", "scotland": "Europe", "wales": "Europe", "ireland": "Europe",
+    "netherlands": "Europe", "belgium": "Europe", "switzerland": "Europe",
+    "austria": "Europe", "poland": "Europe", "czech republic": "Europe",
+    "czechia": "Europe", "hungary": "Europe", "greece": "Europe",
+    "sweden": "Europe", "norway": "Europe", "finland": "Europe", "denmark": "Europe",
+    "iceland": "Europe", "russia": "Europe", "ukraine": "Europe",
+    "romania": "Europe", "bulgaria": "Europe", "serbia": "Europe",
+    "croatia": "Europe", "slovenia": "Europe", "slovakia": "Europe",
+    "estonia": "Europe", "latvia": "Europe", "lithuania": "Europe",
+    "luxembourg": "Europe", "malta": "Europe", "cyprus": "Europe",
+    # Africa
+    "egypt": "Africa", "morocco": "Africa", "south africa": "Africa",
+    "kenya": "Africa", "nigeria": "Africa", "ethiopia": "Africa", "ghana": "Africa",
+    "algeria": "Africa", "tunisia": "Africa", "uganda": "Africa",
+    "tanzania": "Africa", "senegal": "Africa", "zimbabwe": "Africa",
+    "namibia": "Africa", "botswana": "Africa", "madagascar": "Africa",
+    # North America
+    "united states": "North America", "usa": "North America", "us": "North America",
+    "canada": "North America", "mexico": "North America", "cuba": "North America",
+    "jamaica": "North America", "guatemala": "North America",
+    "panama": "North America", "costa rica": "North America",
+    "honduras": "North America", "nicaragua": "North America",
+    "el salvador": "North America", "dominican republic": "North America",
+    # South America
+    "brazil": "South America", "argentina": "South America", "chile": "South America",
+    "peru": "South America", "colombia": "South America",
+    "venezuela": "South America", "ecuador": "South America",
+    "bolivia": "South America", "uruguay": "South America",
+    "paraguay": "South America", "guyana": "South America",
+    # Oceania
+    "australia": "Oceania", "new zealand": "Oceania", "fiji": "Oceania",
+    "papua new guinea": "Oceania",
+}
+
+# Rough N/S hemisphere assignment for top-prevalent geolocation countries.
+_COUNTRY_HEMISPHERE = {
+    # Southern hemisphere (everything south of equator, plus mostly-southern)
+    "australia": "S", "new zealand": "S", "argentina": "S", "chile": "S",
+    "uruguay": "S", "paraguay": "S", "bolivia": "S", "peru": "S",
+    "brazil": "S",  # mostly south
+    "south africa": "S", "namibia": "S", "botswana": "S", "zimbabwe": "S",
+    "madagascar": "S", "tanzania": "S",  # mostly south
+    "indonesia": "S",  # mostly south
+    "papua new guinea": "S", "fiji": "S",
+}
+
+
+def _continent_of(country: str) -> str | None:
+    if not country:
+        return None
+    return _COUNTRY_TO_CONTINENT.get(country.strip().lower())
+
+
+def _hemisphere_of(country: str) -> str:
+    """Default 'N' for any country not explicitly listed as 'S'."""
+    if not country:
+        return "N"
+    return _COUNTRY_HEMISPHERE.get(country.strip().lower(), "N")
+
+
+def _apply_pre_analysis_bias(prior: dict[str, float], pre: dict | None,
+                             boost: float = 1.5,
+                             penalty: float = 0.5) -> dict[str, float]:
+    """
+    Multiplicatively bias the country prior by the pre-analysis hemisphere and
+    continent guesses. Countries consistent with hints get multiplied by `boost`;
+    inconsistent ones by `penalty`. Then renormalize.
+
+    Conservative: only applied when the pre-analysis is explicit (not 'unknown')
+    and a candidate has a known continent/hemisphere mapping.
+    """
+    if not pre:
+        return prior
+    hemi_hint = pre.get("hemisphere", "unknown")
+    cont_hint = pre.get("continent", "unknown")
+    if hemi_hint == "unknown" and cont_hint == "unknown":
+        return prior
+
+    adjusted = {}
+    for hyp, p in prior.items():
+        factor = 1.0
+        cont = _continent_of(hyp)
+        hemi = _hemisphere_of(hyp)
+        if cont_hint != "unknown" and cont is not None:
+            factor *= boost if cont == cont_hint else penalty
+        if hemi_hint != "unknown" and hemi_hint in ("N", "S"):
+            factor *= boost if hemi == hemi_hint else penalty
+        adjusted[hyp] = p * factor
+
+    total = sum(adjusted.values())
+    if total <= 0:
+        return prior
+    return {k: v / total for k, v in adjusted.items()}
+
+
+def _fact_check_prompt(country: str, city: str) -> list:
+    """
+    GEO-R1 Fact-Check Engine (lightweight, text-only): after city prediction,
+    verify city actually belongs to the predicted country. A common failure mode
+    is the city/country fields being independently produced and incompatible
+    (e.g., 'Paris' as city of 'United States'). One small LLM call rejects these.
+    """
+    return [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": (
+                    f"Is '{city}' a real city located in '{country}'?\n"
+                    "Answer with JSON only: "
+                    '{"consistent": true|false, "true_country": "<country if you '
+                    "know where this city is, else null>\"}"
+                )},
+            ],
+        }
+    ]
+
+
 # ── Main pipeline class ────────────────────────────────────────────────────────
 
 BATCH_SIZE = 20  # number of images to process in parallel; reduce if OOM
@@ -214,14 +410,22 @@ class GeoPipeline:
         self.dst   = DSTModule()
         self.pomdp = POMDPModule(mllm)
 
-    def _hypothesize(self, image: Image.Image, level: str, context: str = "") -> tuple[dict, list]:
+    def _pre_analyze(self, image: Image.Image) -> dict | None:
+        """Run the pre-analysis prompt; returns None on parse failure."""
+        resp = self.mllm.generate(_pre_analysis_prompt(image))
+        parsed = _try_parse_json(resp)
+        return parsed if isinstance(parsed, dict) else None
+
+    def _hypothesize(self, image: Image.Image, level: str, context: str = "",
+                     pre: dict | None = None) -> tuple[dict, list]:
         """Returns (prior_dict, verification_plan_list).
 
-        Country level: ensembles the GLOBE 4-cue structured prompt with a
-        GeoReasoner freeform prompt — the two have largely disjoint failure
-        modes, so combining them boosts Top-1 country recall.
+        Country level: ensembles the GRE 5-cue structured prompt with a
+        GeoReasoner freeform prompt and biases by the pre-analysis hemisphere/
+        continent hints. Three independent signals (structured, freeform,
+        pre-analysis) with disjoint failure modes.
         """
-        messages = _hypothesize_prompt(image, level, context)
+        messages = _hypothesize_prompt(image, level, context, pre=pre)
         response = self.mllm.generate(messages)
         parsed = _try_parse_json(response)
         if parsed is None or "hypotheses" not in parsed:
@@ -238,6 +442,9 @@ class GeoPipeline:
             rc = r_parsed.get("country") if r_parsed else None
             if rc:
                 prior = _merge_geo_reasoner_seed(prior, rc)
+            # Bias by the pre-analysis hemisphere/continent hints (very cheap
+            # and helps the most catastrophic cross-hemisphere errors).
+            prior = _apply_pre_analysis_bias(prior, pre)
 
         return prior, plan
 
@@ -293,14 +500,27 @@ class GeoPipeline:
     def predict(self, image: Image.Image) -> dict:
         """
         Full coarse-to-fine inference for one image.
-        Returns {level: best_location_name, "posterior": final_posterior_dict}.
+        Returns {level: best_location_name, "posterior": final_posterior_dict,
+                 "pre_analysis": <dict from pre-analysis prompt>}.
         """
         result       = {}
         key_evidence = []
         context      = ""
 
+        # Pre-analysis: hemisphere/continent/locatability/setting hints.
+        pre = self._pre_analyze(image)
+        result["pre_analysis"] = pre
+
         for level in LEVELS:
-            prior, plan = self._hypothesize(image, level, context)
+            # Locatability gate: skip street-level inference when the image is
+            # judged un-localizable (rural, indoor, no-landmark). Saves compute
+            # and prevents the pipeline from forcing a wrong street guess.
+            if pre and level == "street" and pre.get("locatability") == "low":
+                result[level] = "Unknown"
+                result[f"{level}_posterior"] = {}
+                continue
+
+            prior, plan = self._hypothesize(image, level, context, pre=pre)
 
             # at city/street level, seed hypotheses from prior level result
             if level != "country" and result:
@@ -311,9 +531,19 @@ class GeoPipeline:
                 image, level, prior, plan, key_evidence
             )
 
-            best = max(posterior, key=posterior.get)
+            best = max(posterior, key=posterior.get) if posterior else "Unknown"
             result[level] = best
             result[f"{level}_posterior"] = posterior
+
+        # Fact-check: ensure predicted city is actually in predicted country.
+        # If inconsistent, blank the city so evaluate.py geocodes the country.
+        if (result.get("city") not in (None, "Unknown")
+                and result.get("country") not in (None, "Unknown")):
+            fc_resp = self.mllm.generate(_fact_check_prompt(result["country"], result["city"]))
+            fc = _try_parse_json(fc_resp)
+            if fc and fc.get("consistent") is False:
+                result["city"] = "Unknown"
+                result["city_posterior"] = {}
 
         result["posterior"] = posterior
         return result
@@ -330,10 +560,32 @@ class GeoPipeline:
         key_evidence = [[] for _ in range(n)]
         contexts     = [""] * n
 
+        # ── Pre-analysis: one batched LLM call for all images ──────────────────
+        # Produces hemisphere / climate / setting / locatability / continent
+        # hints, used to (a) bias country prior, (b) gate street-level inference.
+        pre_msgs = [_pre_analysis_prompt(img) for img in images]
+        pre_resps = self.mllm.batch_generate(pre_msgs)
+        pre_list: list[dict | None] = []
+        for resp in pre_resps:
+            parsed = _try_parse_json(resp)
+            pre_list.append(parsed if isinstance(parsed, dict) else None)
+        for i in range(n):
+            results[i]["pre_analysis"] = pre_list[i]
+
         for level in LEVELS:
+            # Locatability gate: skip street-level for low-locatability images.
+            if level == "street":
+                active_imgs_idx = [
+                    i for i in range(n)
+                    if not (pre_list[i] and pre_list[i].get("locatability") == "low")
+                ]
+            else:
+                active_imgs_idx = list(range(n))
+
             # ── Hypothesize: one batch call for all images ──────────────────────
             hyp_messages = [
-                _hypothesize_prompt(images[i], level, contexts[i]) for i in range(n)
+                _hypothesize_prompt(images[i], level, contexts[i], pre=pre_list[i])
+                for i in range(n)
             ]
             hyp_responses = self.mllm.batch_generate(hyp_messages)
 
@@ -351,9 +603,9 @@ class GeoPipeline:
                     plans.append(parsed.get("verification_plan", []))
 
             # ── Country-level: add GeoReasoner freeform second prompt as a ──────
-            # complementary signal (ensemble across two prompt structures). Only
-            # at country level — at city/street the context-conditioned single
-            # prompt is enough.
+            # complementary signal, then apply pre-analysis hemisphere/continent
+            # bias. Three signals (structured 5-cue + freeform + pre-analysis)
+            # produce the country prior.
             if level == "country":
                 reasoner_msgs = [_geo_reasoner_prompt(images[i]) for i in range(n)]
                 reasoner_resps = self.mllm.batch_generate(reasoner_msgs)
@@ -362,6 +614,7 @@ class GeoPipeline:
                     rc = parsed.get("country") if parsed else None
                     if rc and "Unknown" not in priors[i]:
                         priors[i] = _merge_geo_reasoner_seed(priors[i], rc)
+                    priors[i] = _apply_pre_analysis_bias(priors[i], pre_list[i])
 
             # seed context from parent level
             if level != "country":
@@ -378,9 +631,9 @@ class GeoPipeline:
             ev_scores_all = [[] for _ in range(n)]
 
             while True:
-                # find images still running
+                # find images still running. Honor locatability gate at street.
                 active = [
-                    i for i in range(n)
+                    i for i in active_imgs_idx
                     if not self.pomdp.should_stop(
                         posteriors[i], steps[i], level, len(pending[i]) == 0
                     )
@@ -444,6 +697,30 @@ class GeoPipeline:
                 best = max(posteriors[i], key=posteriors[i].get)
                 results[i][level] = best
                 results[i][f"{level}_posterior"] = posteriors[i]
+
+            # ── Fact-check (after city level): batch text-only LLM call to ─────
+            # verify each (country, city) pair is geographically consistent.
+            # GEO-R1 idea: city + country are produced from separate hierarchical
+            # steps and occasionally disagree (e.g. country=Italy, city=Paris).
+            # Blanking inconsistent cities lets evaluate.py geocode the country
+            # instead — recovers country-level accuracy at no city-level cost.
+            if level == "city":
+                fc_idx = [
+                    i for i in range(n)
+                    if results[i].get("city") not in (None, "Unknown")
+                    and results[i].get("country") not in (None, "Unknown")
+                ]
+                if fc_idx:
+                    fc_msgs = [
+                        _fact_check_prompt(results[i]["country"], results[i]["city"])
+                        for i in fc_idx
+                    ]
+                    fc_resps = self.mllm.batch_generate(fc_msgs)
+                    for i, resp in zip(fc_idx, fc_resps):
+                        fc = _try_parse_json(resp)
+                        if fc and fc.get("consistent") is False:
+                            results[i]["city"] = "Unknown"
+                            results[i]["city_posterior"] = {}
 
             results_i_posterior = posteriors  # noqa: F841 — kept for debuggability
 
