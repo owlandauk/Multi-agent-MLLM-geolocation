@@ -12,15 +12,23 @@ set -u
 
 # ── Config ────────────────────────────────────────────────────────────────────
 GPUS="${GPUS:-0,1,2,3}"          # which GPUs we need (comma-separated indices)
-REQUIRED_FREE_MB=10000           # min free VRAM per GPU. 11GB cards: 10GB free = idle
+REQUIRED_FREE_MB=10500           # min free VRAM per GPU. 11GB cards: leaves room
+                                 # for a neighbour to grab <250MB without us OOMing
 MAX_UTIL=5                       # max SM utilization % to consider idle
 CHECK_INTERVAL=30                # seconds between probes
 STABLE_CHECKS=3                  # consecutive idle probes before launching
                                  # (3 × 30s = 90s of confirmed idle)
+FINAL_RECHECK_FREE_MB=10500      # last-second free VRAM check right before launch
+                                 # (catches neighbour grabbing memory during the
+                                 #  gap between final probe and vLLM init)
 
 OUT="${OUT:-results/full_v3.json}"
 BATCH_SIZE="${BATCH_SIZE:-20}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"     # e.g. EXTRA_ARGS="--limit 100 --start 0"
+GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.75}"    # vLLM --gpu-memory-utilization. 0.75 on
+                                        # an 11GB card ≈ 8.25GB budget, leaves
+                                        # ~2.5GB for a neighbour that shows up
+                                        # after launch without us OOMing.
 
 # ── Probe helpers ─────────────────────────────────────────────────────────────
 IFS=',' read -ra GPU_LIST <<< "$GPUS"
@@ -83,8 +91,27 @@ done
 
 # ── Launch ────────────────────────────────────────────────────────────────────
 echo
-echo "[$(date)] All GPUs stable. Launching full eval."
-echo "  out=$OUT  batch_size=$BATCH_SIZE  extra=$EXTRA_ARGS"
+echo "[$(date)] All GPUs stable. Final recheck before launch..."
+
+# Last-second recheck: between the final probe and vLLM init there's a window
+# where a neighbour can grab memory back. If any GPU dropped below the
+# threshold, restart the wait loop instead of OOMing inside vLLM.
+final_ok=1
+for g in "${GPU_LIST[@]}"; do
+    free=$(nvidia-smi -i "$g" --query-gpu=memory.free \
+           --format=csv,noheader,nounits 2>/dev/null | tr -d ' ')
+    if [ -z "$free" ] || [ "$free" -lt "$FINAL_RECHECK_FREE_MB" ]; then
+        echo "  GPU $g: free=${free:-?}MB — dropped below ${FINAL_RECHECK_FREE_MB}MB, aborting launch"
+        final_ok=0
+    fi
+done
+if [ "$final_ok" -ne 1 ]; then
+    echo "[$(date)] Final recheck failed. Exit 1 — rerun the script to wait again."
+    exit 1
+fi
+
+echo "[$(date)] Launching full eval."
+echo "  out=$OUT  batch_size=$BATCH_SIZE  gpu_mem_util=$GPU_MEM_UTIL  extra=$EXTRA_ARGS"
 
 source /home/szuo/.local/opt/miniconda3/etc/profile.d/conda.sh
 conda activate /cvhci/temp/szuo/vllm-env
@@ -94,6 +121,7 @@ cd "$(dirname "$0")"   # cd into geo_pipeline/
 MLLM_BACKEND=vllm \
 CUDA_VISIBLE_DEVICES="$GPUS" \
 MODEL_PATH=/cvhci/temp/szuo/models/qwen2.5-vl-7b \
+VLLM_GPU_MEMORY_UTILIZATION="$GPU_MEM_UTIL" \
 python evaluate.py --batch_size "$BATCH_SIZE" --out "$OUT" $EXTRA_ARGS
 
 echo "[$(date)] eval done."

@@ -279,15 +279,18 @@ class _VLLMClient:
             ) from e
         self._SamplingParams = SamplingParams
 
-        print(f"[MLLM] Loading vLLM engine for {model_path} (TP={tensor_parallel_size}) ...")
-        # gpu_memory_utilization=0.85 leaves a small slack on each 11GB card so
-        # that tokenizer + KV cache spikes don't OOM. limit_mm_per_prompt caps
-        # the image count per request (we always send exactly 1).
+        import os
+        gpu_mem_util = float(os.environ.get("VLLM_GPU_MEMORY_UTILIZATION", "0.85"))
+
+        print(f"[MLLM] Loading vLLM engine for {model_path} (TP={tensor_parallel_size}, mem_util={gpu_mem_util}) ...")
+        # gpu_memory_utilization default 0.85 leaves slack on 11GB cards so
+        # tokenizer + KV cache spikes don't OOM. Override via env var if a
+        # neighbour process is already holding memory on a target GPU.
         self.llm = LLM(
             model=model_path,
             tensor_parallel_size=tensor_parallel_size,
             dtype="float16",
-            gpu_memory_utilization=0.85,
+            gpu_memory_utilization=gpu_mem_util,
             max_model_len=4096,
             limit_mm_per_prompt={"image": 1},
             trust_remote_code=True,
