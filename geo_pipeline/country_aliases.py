@@ -76,6 +76,27 @@ COUNTRY_TO_CONTINENT = {
 _ALIASES_BY_LENGTH = sorted(COUNTRY_TO_CONTINENT.keys(), key=len, reverse=True)
 
 
+# Multiple aliases in COUNTRY_TO_CONTINENT refer to the same country
+# ("usa" / "us" / "america" / "united states"). Without this second map,
+# canonicalize_country("USA") returns "usa" and canonicalize_country
+# ("United States") returns "united states" — _collect_scores then treats
+# them as two candidates and splits the softmax mass across duplicates.
+# Map every alias to its canonical (Nominatim-friendly) country name here.
+_ALIAS_TO_CANONICAL = {
+    # North America
+    "usa": "united states", "us": "united states", "america": "united states",
+    # Europe
+    "uk": "united kingdom", "great britain": "united kingdom",
+    "england": "united kingdom", "scotland": "united kingdom",
+    "wales": "united kingdom",
+    "holland": "netherlands",
+    "czechia": "czech republic",
+    # Asia
+    "burma": "myanmar",
+    "korea": "south korea",
+}
+
+
 def continent_of(country: str) -> str | None:
     if not country:
         return None
@@ -83,29 +104,33 @@ def continent_of(country: str) -> str | None:
 
 
 def canonicalize_country(raw: str) -> str | None:
-    """Return the canonical country key if any alias appears in `raw`, else None.
+    """Return the canonical country name if any alias appears in `raw`, else None.
 
-    Handles: "USA" → "usa", "California, USA" → "usa", "Southeast Asia" → None
-    (no country match), "United Kingdom of Great Britain" → "united kingdom".
+    Handles: "USA" → "united states", "California, USA" → "united states",
+    "Southeast Asia" → None, "UK" → "united kingdom".
     Prefers the last comma-separated token first ("Toronto, Canada" pattern),
-    then falls back to a longest-match substring scan.
+    then falls back to a longest-match substring scan. Aliases collapse to a
+    single canonical form so _softmax_prior sees one entry per country.
     """
     if not raw:
         return None
     low = raw.strip().lower()
 
+    def _canon(name: str) -> str:
+        return _ALIAS_TO_CANONICAL.get(name, name)
+
     # exact hit — fast path
     if low in COUNTRY_TO_CONTINENT:
-        return low
+        return _canon(low)
 
     # last comma-separated tail: "City, Country" → "country"
     if "," in low:
         tail = low.rsplit(",", 1)[1].strip()
         if tail in COUNTRY_TO_CONTINENT:
-            return tail
+            return _canon(tail)
 
     # longest-match substring scan
     for alias in _ALIASES_BY_LENGTH:
         if alias in low:
-            return alias
+            return _canon(alias)
     return None
