@@ -8,6 +8,8 @@ Usage:
   CUDA_VISIBLE_DEVICES=0 python evaluate.py --batch_size 8 --out results/run3.json
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import math
@@ -69,22 +71,33 @@ def geocode(location_name: str):
     return None
 
 
-def _geocode_with_country(name: str, country: str | None):
-    """Try the bare name first; if it fails, retry as 'name, country'.
+def _geocode_level(name: str, level: str, country: str | None):
+    """Geocode one prediction level and return coords plus diagnostic source.
 
     Nominatim's gazetteer is ambiguous for many city/street names (a dozen
     "Springfield"s, two "Naples", etc.). When the predicted country is
-    available, qualifying the query shrinks the search space and usually
-    resolves to the right hit. Only retries when (a) bare lookup returned
-    None and (b) the country isn't already in the name string.
+    available, qualifying street/city queries first shrinks the search space.
+    Bare fallback is still allowed so fine-grained metrics are not discarded
+    when Nominatim cannot resolve the qualified string.
     """
+    if level in ("street", "city"):
+        country_ok = bool(country and country.lower() not in ("unknown", ""))
+        name_has_country = country_ok and country.lower() in name.lower()
+        if country_ok and not name_has_country:
+            coords = geocode(f"{name}, {country}")
+            if coords is not None:
+                return coords, f"{level}_country_qualified", "country_qualified"
+
+        coords = geocode(name)
+        if coords is not None:
+            consistency = "country_in_name" if name_has_country else "unchecked"
+            return coords, f"{level}_bare", consistency
+        return None, None, "failed"
+
     coords = geocode(name)
     if coords is not None:
-        return coords
-    if country and country.lower() not in ("unknown", "") \
-            and country.lower() not in name.lower():
-        return geocode(f"{name}, {country}")
-    return None
+        return coords, "country", "country_level"
+    return None, None, "failed"
 
 
 def _continent_fallback_coords(pred: dict) -> tuple | None:
@@ -154,19 +167,26 @@ def evaluate(args):
                         break
 
             pred_coords = None
+            geocode_source = None
+            country_consistency = None
             # Hierarchical geocode: street → city → country. For street/city
-            # use country-qualified retry on Nominatim miss.
+            # try country-qualified queries before bare-name fallback.
             for level in ["street", "city", "country"]:
                 name = pred.get(level)
                 if name and name != "Unknown":
                     qualifier = pred_country if level in ("street", "city") else None
-                    pred_coords = _geocode_with_country(name, qualifier)
+                    pred_coords, geocode_source, country_consistency = _geocode_level(
+                        name, level, qualifier
+                    )
                     if pred_coords:
                         break
             # Last-resort continent centroid (saves the <=2500km threshold when
             # Nominatim returns None for every level, e.g. obsolete country names).
             if pred_coords is None:
                 pred_coords = _continent_fallback_coords(pred)
+                if pred_coords is not None:
+                    geocode_source = "continent_fallback"
+                    country_consistency = "fallback"
 
             gt_lat, gt_lon = sample["gt_lat"], sample["gt_lon"]
             dist_km = haversine(gt_lat, gt_lon, pred_coords[0], pred_coords[1]) \
@@ -182,6 +202,8 @@ def evaluate(args):
                 "pred_lat":     pred_coords[0] if pred_coords else None,
                 "pred_lon":     pred_coords[1] if pred_coords else None,
                 "dist_km":      dist_km,
+                "geocode_source": geocode_source,
+                "country_consistency": country_consistency,
                 "country_posterior": {
                     k: round(float(v), 4)
                     for k, v in (pred.get("country_posterior") or {}).items()

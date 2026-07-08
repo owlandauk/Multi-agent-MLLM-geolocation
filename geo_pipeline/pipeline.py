@@ -12,6 +12,8 @@ Flow (one image):
   3. Output MAP location → geocode → (lat, lon)
 """
 
+from __future__ import annotations
+
 import json
 import re
 import math
@@ -30,6 +32,32 @@ from config import (
 LEVELS = ["country", "city", "street"]
 
 _JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
+
+_COUNTRY_CUE_PROMPTS = [
+    (
+        "language_script_traffic",
+        "Focus on language, scripts, road signs, license plates, lane markings, "
+        "traffic direction, and public transport clues. Return likely countries only.",
+    ),
+    (
+        "climate_landscape_hemisphere",
+        "Focus on climate, vegetation, terrain, sunlight, seasons, hemisphere, and "
+        "rural or coastal landscape clues. Return likely countries only.",
+    ),
+    (
+        "architecture_urban_form",
+        "Focus on architecture, urban layout, road furniture, utilities, building "
+        "materials, and regional infrastructure style. Return likely countries only.",
+    ),
+]
+
+_COUNTRY_FIXED_TASKS = [
+    {"desc": "Check visible language, script, road signs, and storefront text", "bbox": None},
+    {"desc": "Check road layout, traffic direction, lane markings, and license plates", "bbox": None},
+    {"desc": "Check vegetation, climate, terrain, season, and hemisphere cues", "bbox": None},
+    {"desc": "Check architecture, building materials, utilities, and street furniture", "bbox": None},
+    {"desc": "Check landscape context such as coast, mountains, rural setting, or urban density", "bbox": None},
+]
 
 
 def _try_parse_json(text: str):
@@ -77,6 +105,38 @@ def _collect_scores(hypotheses: list, level: str) -> dict[str, float]:
     return scores
 
 
+def _merge_country_scores(parsed_responses: list[dict | None], top_k: int = 8) -> dict[str, float]:
+    """Merge country hypotheses from multiple short prompts."""
+    max_scores: dict[str, float] = {}
+    source_counts: dict[str, int] = {}
+
+    for parsed in parsed_responses:
+        if not parsed or "hypotheses" not in parsed:
+            continue
+        source_scores = _collect_scores(parsed["hypotheses"], "country")
+        for country, score in source_scores.items():
+            max_scores[country] = max(max_scores.get(country, 0.0), score)
+            source_counts[country] = source_counts.get(country, 0) + 1
+
+    merged = {
+        country: min(score + 0.05 * (source_counts.get(country, 1) - 1), 0.95)
+        for country, score in max_scores.items()
+    }
+    return dict(sorted(merged.items(), key=lambda kv: -kv[1])[:top_k])
+
+
+def _prepend_country_tasks(plan: list[dict]) -> list[dict]:
+    seen = set()
+    out: list[dict] = []
+    for task in [*_COUNTRY_FIXED_TASKS, *plan]:
+        desc = task.get("desc")
+        if not desc or desc in seen:
+            continue
+        seen.add(desc)
+        out.append({"desc": desc, "bbox": task.get("bbox")})
+    return out
+
+
 # ── Prompt builders ────────────────────────────────────────────────────────────
 
 def _hypothesize_prompt(image: Image.Image, level: str, context: str = "") -> list:
@@ -98,6 +158,23 @@ def _hypothesize_prompt(image: Image.Image, level: str, context: str = "") -> li
                     '  "hypotheses": [{"location": "<name>", "confidence": <0-1>}, ...],\n'
                     '  "verification_plan": [{"desc": "<what to check>", "bbox": [x,y,w,h] or null}, ...]\n'
                     '}'
+                )},
+            ],
+        }
+    ]
+
+
+def _country_cue_prompt(image: Image.Image, cue_instruction: str) -> list:
+    return [
+        {
+            "role": "user",
+            "content": [
+                {"type": "image", "image": image},
+                {"type": "text", "text": (
+                    "You are a geolocation expert. Identify likely countries. "
+                    f"{cue_instruction}\n\n"
+                    "Analyze this image and respond with JSON only:\n"
+                    '{"hypotheses": [{"location": "<country>", "confidence": <0-1>}, ...]}'
                 )},
             ],
         }
@@ -142,6 +219,24 @@ class GeoPipeline:
         messages = _hypothesize_prompt(image, level, context)
         response = self.mllm.generate(messages)
         parsed = _try_parse_json(response)
+
+        if level == "country":
+            cue_responses = [
+                self.mllm.generate(_country_cue_prompt(image, cue_text))
+                for _, cue_text in _COUNTRY_CUE_PROMPTS
+            ]
+            cue_parsed = [_try_parse_json(resp) for resp in cue_responses]
+            parsed_sources = [parsed] if parsed and "hypotheses" in parsed else []
+            raw_scores = _merge_country_scores([*parsed_sources, *cue_parsed])
+            prior = _softmax_prior(raw_scores) if raw_scores else {"Unknown": 1.0}
+            general_plan = parsed.get("verification_plan", []) if parsed else []
+            plan = _prepend_country_tasks(general_plan)
+            raw_bundle = json.dumps(
+                {"general": response, "cue_responses": cue_responses},
+                ensure_ascii=False,
+            )
+            return prior, plan, raw_bundle
+
         if parsed is None or "hypotheses" not in parsed:
             # fallback: single hypothesis with uniform prior
             return {"Unknown": 1.0}, [], response
@@ -210,13 +305,13 @@ class GeoPipeline:
         context      = ""
 
         for level in LEVELS:
-            prior, plan, raw_resp = self._hypothesize(image, level, context)
-            result[f"{level}_raw_response"] = raw_resp
-
             # at city/street level, seed hypotheses from prior level result
             if level != "country" and result:
                 parent = result.get(LEVELS[LEVELS.index(level) - 1], "")
                 context = f"Located in {parent}. Key clues: {'; '.join(key_evidence[-3:])}"
+
+            prior, plan, raw_resp = self._hypothesize(image, level, context)
+            result[f"{level}_raw_response"] = raw_resp
 
             posterior, key_evidence = self._run_level(
                 image, level, prior, plan, key_evidence
@@ -246,18 +341,48 @@ class GeoPipeline:
         contexts     = [""] * n
 
         for level in LEVELS:
+            # seed context from parent level before hypothesizing the next level
+            if level != "country":
+                parent_level = LEVELS[LEVELS.index(level) - 1]
+                for i in range(n):
+                    parent = results[i].get(parent_level, "")
+                    clues = "; ".join(key_evidence[i][-3:])
+                    contexts[i] = f"Located in {parent}. Key clues: {clues}" if parent else ""
+
             # ── Hypothesize: one batch call for all images ──────────────────────
-            hyp_messages = [
-                _hypothesize_prompt(images[i], level, contexts[i]) for i in range(n)
-            ]
-            hyp_responses = self.mllm.batch_generate(hyp_messages)
+            if level == "country":
+                general_messages = [_hypothesize_prompt(images[i], level, contexts[i]) for i in range(n)]
+                hyp_responses = self.mllm.batch_generate(general_messages)
+                cue_responses_by_cue = []
+                for _, cue_text in _COUNTRY_CUE_PROMPTS:
+                    cue_messages = [_country_cue_prompt(images[i], cue_text) for i in range(n)]
+                    cue_responses_by_cue.append(self.mllm.batch_generate(cue_messages))
+            else:
+                hyp_messages = [_hypothesize_prompt(images[i], level, contexts[i]) for i in range(n)]
+                hyp_responses = self.mllm.batch_generate(hyp_messages)
+                cue_responses_by_cue = []
 
             priors = []
             plans  = []
             for i, resp in enumerate(hyp_responses):
                 results[i][f"{level}_raw_response"] = resp
                 parsed = _try_parse_json(resp)
-                if parsed is None or "hypotheses" not in parsed:
+                if level == "country":
+                    cue_resps = [cue_batch[i] for cue_batch in cue_responses_by_cue]
+                    cue_parsed = [_try_parse_json(resp) for resp in cue_resps]
+                    results[i][f"{level}_raw_response"] = json.dumps(
+                        {"general": resp, "cue_responses": cue_resps},
+                        ensure_ascii=False,
+                    )
+                    parsed_sources = [parsed] if parsed and "hypotheses" in parsed else []
+                    raw_scores = _merge_country_scores([*parsed_sources, *cue_parsed])
+                    if raw_scores:
+                        priors.append(_softmax_prior(raw_scores))
+                    else:
+                        priors.append({"Unknown": 1.0})
+                    plan = parsed.get("verification_plan", []) if parsed else []
+                    plans.append(_prepend_country_tasks(plan))
+                elif parsed is None or "hypotheses" not in parsed:
                     priors.append({"Unknown": 1.0})
                     plans.append([])
                 else:
@@ -266,15 +391,8 @@ class GeoPipeline:
                         priors.append(_softmax_prior(raw_scores))
                     else:
                         priors.append({"Unknown": 1.0})
-                    plans.append(parsed.get("verification_plan", []))
-
-            # seed context from parent level
-            if level != "country":
-                parent_level = LEVELS[LEVELS.index(level) - 1]
-                for i in range(n):
-                    parent = results[i].get(parent_level, "")
-                    clues  = "; ".join(key_evidence[i][-3:])
-                    contexts[i] = f"Located in {parent}. Key clues: {clues}" if parent else ""
+                    plan = parsed.get("verification_plan", [])
+                    plans.append(plan)
 
             # ── POMDP loop across all images simultaneously ─────────────────────
             posteriors    = [dict(p) for p in priors]
