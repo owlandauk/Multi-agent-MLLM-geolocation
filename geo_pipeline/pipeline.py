@@ -141,8 +141,9 @@ def _context_for_level(level: str, result: dict, key_evidence: list[str]) -> str
         countries = _format_top_candidates(result.get("country_posterior", {}))
         return (
             f"Country candidates: {countries}. "
-            "Prefer cities consistent with these countries, but include an explicitly named "
-            "city+country alternative if the visual evidence contradicts the top country. "
+            "Hypothesize cities within these candidate countries. Do not introduce a city "
+            "from a different country unless visible text or a landmark directly names it. "
+            "If the country remains ambiguous, keep alternatives within the listed candidates. "
             f"Key clues: {clues}"
         )
     if level == "street":
@@ -150,7 +151,8 @@ def _context_for_level(level: str, result: dict, key_evidence: list[str]) -> str
         cities = _format_top_candidates(result.get("city_posterior", {}))
         return (
             f"Country candidates: {countries}. City candidates: {cities}. "
-            "Return street/district/landmark hypotheses with city and country when possible. "
+            "Refine within these city/country candidates. Return a street, district, or landmark; "
+            "do not append a different country unless directly visible in the image. "
             f"Key clues: {clues}"
         )
     return ""
