@@ -28,7 +28,8 @@ from config import (
     PRIOR_TEMP, PRIOR_CUTOFF, TRANSITION_THR,
     VERIFY_MAX_NEW_TOKENS, POMDP_MAX_NEW_TOKENS,
     STRONG_POSTERIOR_THR, STABLE_MARGIN_THR, STABLE_ENTROPY_THR,
-    COUNTRY_REPLACE_ATTEMPTS,
+    GUARDED_DESCENT_THR, COUNTRY_REPLACE_TOP_THR,
+    COUNTRY_REPLACE_MARGIN_THR, COUNTRY_REPLACE_ATTEMPTS,
 )
 
 LEVELS = ["country", "city", "street"]
@@ -165,6 +166,20 @@ def _stable_for_descent(posterior: dict[str, float]) -> bool:
     if stats["top"] < TRANSITION_THR:
         return False
     return stats["margin"] >= STABLE_MARGIN_THR or stats["entropy"] <= STABLE_ENTROPY_THR
+
+
+def _allow_guarded_descent(posterior: dict[str, float]) -> bool:
+    """Allow child reasoning with conflict filtering when country is plausible."""
+    return _posterior_stats(posterior)["top"] >= GUARDED_DESCENT_THR
+
+
+def _should_replace_country(posterior: dict[str, float]) -> bool:
+    """Replace only when country belief is genuinely weak or nearly tied."""
+    stats = _posterior_stats(posterior)
+    return (
+        stats["top"] < COUNTRY_REPLACE_TOP_THR
+        or stats["margin"] < COUNTRY_REPLACE_MARGIN_THR
+    )
 
 
 def _country_candidate_set(country_posterior: dict[str, float], k: int = 3) -> set[str]:
@@ -392,7 +407,7 @@ class GeoPipeline:
                 image, level, prior, plan, key_evidence
             )
 
-            if level == "country" and not _stable_for_descent(posterior):
+            if level == "country" and _should_replace_country(posterior):
                 for _ in range(COUNTRY_REPLACE_ATTEMPTS):
                     replace_context = _replace_context(level, posterior, key_evidence)
                     prior, plan, raw_resp = self._hypothesize(image, level, replace_context)
@@ -420,9 +435,9 @@ class GeoPipeline:
             # stop early if confidence is very low (model has no signal)
             if posterior.get(best, 0) < 0.3 and level == "country":
                 break
-            if level == "country" and not _stable_for_descent(posterior):
-                # Replace could not produce a reliable country distribution.
-                # Avoid propagating a flat parent posterior into noisy child prompts.
+            if level == "country" and not _allow_guarded_descent(posterior):
+                # Even guarded descent would be too noisy. Avoid propagating a
+                # very weak parent posterior into child prompts.
                 for remaining in LEVELS[LEVELS.index(level) + 1:]:
                     result[remaining] = "Unknown"
                     result[f"{remaining}_posterior"] = {}
@@ -563,11 +578,11 @@ class GeoPipeline:
                 idx: raw for idx, raw in zip(level_indices, raw_responses)
             }
 
-            # Replace: if country remains flat after verification, regenerate the
-            # country candidate set once with a prompt that asks for diverse but
-            # evidence-grounded candidates.
+            # Replace: only regenerate the country candidate set when belief is
+            # genuinely weak or nearly tied. Marginally unstable but plausible
+            # country distributions are allowed to descend with child filtering.
             if level == "country" and COUNTRY_REPLACE_ATTEMPTS > 0:
-                unstable = [idx for idx in level_indices if not _stable_for_descent(posteriors_by_idx[idx])]
+                unstable = [idx for idx in level_indices if _should_replace_country(posteriors_by_idx[idx])]
                 for _ in range(COUNTRY_REPLACE_ATTEMPTS):
                     if not unstable:
                         break
@@ -584,7 +599,7 @@ class GeoPipeline:
                         raw_by_idx[idx] = raw
                         posteriors_by_idx[idx] = post
                         results[idx]["country_replaced"] = True
-                    unstable = [idx for idx in unstable if not _stable_for_descent(posteriors_by_idx[idx])]
+                    unstable = [idx for idx in unstable if _should_replace_country(posteriors_by_idx[idx])]
 
             # ── Collect level results ───────────────────────────────────────────
             for i in level_indices:
@@ -605,10 +620,10 @@ class GeoPipeline:
                 results[i][f"{level}_stable"] = _stable_for_descent(posterior)
 
                 if level == "country" and (
-                    posterior.get(best, 0) < 0.3 or not _stable_for_descent(posterior)
+                    posterior.get(best, 0) < 0.3 or not _allow_guarded_descent(posterior)
                 ):
-                    # No reliable country distribution — avoid propagating a flat
-                    # parent into noisy child prompts.
+                    # Even guarded descent would be too noisy. Avoid propagating a
+                    # very weak parent into child prompts.
                     for remaining in LEVELS[LEVELS.index(level) + 1:]:
                         results[i][remaining] = "Unknown"
                         results[i][f"{remaining}_posterior"] = {}

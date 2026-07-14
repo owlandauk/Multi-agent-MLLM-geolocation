@@ -219,3 +219,62 @@ Country-child conflict rate
 GT North America acc@2500
 Continent <2500km
 ```
+
+## v9 Limit300 Result And Diagnosis
+
+`v9_limit300.json` shows the new controls are effective at reducing cross-level
+conflict, but too conservative:
+
+```text
+Street <1km        1.67%
+City <25km        10.33%
+Region <200km     17.33%
+Country <750km    32.00%
+Continent <2500km 58.67%
+Country posterior top mass: mean=0.5099 median=0.5534
+Country-child conflict rate: 10.67%
+Country replace rate: 63.67%
+Country stable rate: 51.33%
+Backtrack conflict rate: city=0.67% street=0.33%
+Geocode source: country=156/300
+```
+
+Interpretation:
+
+- Backtrack/filter worked: country-child conflict dropped from v8's 42.90% to
+  10.67% on the small run.
+- North America was no longer over-suppressed on this sample: GT North America
+  acc@2500 recovered to 61.47%.
+- The gate is too strict: 63.67% of samples trigger Replace, only 51.33% are
+  stable after control, and 156/300 records fall back to country-level geocoding.
+  This explains the poor street/city/region scores.
+
+Next adjustment should loosen the descent controller and make Replace less
+aggressive:
+
+1. Relax stability thresholds: lower `STRONG_POSTERIOR_THR`, lower margin, raise
+   entropy allowance.
+2. Replace only when the posterior is truly flat/weak, not for every marginally
+   unstable country distribution.
+3. If country remains weak after Replace, allow guarded city descent when top
+   country is at least plausible, relying on child conflict filtering instead of
+   stopping at country level.
+4. Keep child-country filtering because it reduced conflicts without many direct
+   backtrack triggers.
+
+## v9.1 Adjustment
+
+Implemented after `v9_limit300` showed over-conservative behavior:
+
+- Relaxed stability gate:
+  - `STRONG_POSTERIOR_THR: 0.70 -> 0.65`
+  - `STABLE_MARGIN_THR: 0.10 -> 0.06`
+  - `STABLE_ENTROPY_THR: 0.85 -> 0.95`
+- Added guarded descent: country distributions with top mass >= 0.45 may still
+  descend even if not fully stable, relying on child-country filtering to catch
+  bad child hypotheses.
+- Made Replace less aggressive: replace only when `top < 0.50` or
+  `margin < 0.03`, instead of replacing every not-stable country posterior.
+
+Goal for next `v9_1_limit300`: reduce country-level fallback and replace rate
+while keeping country-child conflict far below v8's 42.90%.

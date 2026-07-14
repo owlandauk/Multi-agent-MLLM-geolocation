@@ -22,9 +22,12 @@ BETA            = 0.693  # ln2
 # strong, or it clears the transition threshold with enough top1-top2 margin / low
 # normalized entropy. This prevents flat country posteriors from blindly driving
 # city/street prompts.
-STRONG_POSTERIOR_THR = 0.70
-STABLE_MARGIN_THR    = 0.10
-STABLE_ENTROPY_THR   = 0.85
+STRONG_POSTERIOR_THR = 0.65
+STABLE_MARGIN_THR    = 0.06
+STABLE_ENTROPY_THR   = 0.95
+GUARDED_DESCENT_THR  = 0.45
+COUNTRY_REPLACE_TOP_THR    = 0.50
+COUNTRY_REPLACE_MARGIN_THR = 0.03
 COUNTRY_REPLACE_ATTEMPTS = 1
 
 # ── SL (single-source uncertainty) ────────────────────────────────────────────
