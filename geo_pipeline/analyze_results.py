@@ -88,6 +88,14 @@ def analyze(records: list[dict]) -> dict:
     conflicts = [r for r in records if _country_conflicts(r)]
     country_replaced = sum(1 for r in records if r.get("country_replaced"))
     country_web_enhanced = sum(1 for r in records if r.get("country_web_enhanced"))
+    visual_deltas = [
+        float(r["country_visual_delta"]) for r in records
+        if r.get("country_visual_delta") is not None
+    ]
+    web_deltas = [
+        float(r["country_web_delta"]) for r in records
+        if r.get("country_web_delta") is not None
+    ]
     country_stable_known = [r for r in records if r.get("country_stable") is not None]
     country_stable = sum(1 for r in country_stable_known if r.get("country_stable"))
     city_backtrack = sum(1 for r in records if r.get("city_backtrack_conflicts"))
@@ -147,6 +155,14 @@ def analyze(records: list[dict]) -> dict:
         "country_child_conflict_rate": round(100.0 * len(conflicts) / total, 2) if total else 0.0,
         "country_replaced_rate": round(100.0 * country_replaced / total, 2) if total else 0.0,
         "country_web_enhanced_rate": round(100.0 * country_web_enhanced / total, 2) if total else 0.0,
+        "country_visual_delta": {
+            "mean": round(mean(visual_deltas), 4) if visual_deltas else None,
+            "median": round(median(visual_deltas), 4) if visual_deltas else None,
+        },
+        "country_web_delta": {
+            "mean": round(mean(web_deltas), 4) if web_deltas else None,
+            "median": round(median(web_deltas), 4) if web_deltas else None,
+        },
         "country_stable_rate": (
             round(100.0 * country_stable / len(country_stable_known), 2)
             if country_stable_known else None
@@ -206,6 +222,18 @@ def _print_report(report: dict) -> None:
     print(f"Country-child conflict rate: {report['country_child_conflict_rate']:.2f}%")
     print(f"Country replace rate: {report['country_replaced_rate']:.2f}%")
     print(f"Country web enhance rate: {report['country_web_enhanced_rate']:.2f}%")
+    visual_delta = report.get("country_visual_delta", {})
+    if visual_delta.get("mean") is not None:
+        print(
+            "Country visual delta: "
+            f"mean={visual_delta['mean']} median={visual_delta['median']}"
+        )
+    web_delta = report.get("country_web_delta", {})
+    if web_delta.get("mean") is not None:
+        print(
+            "Country web delta: "
+            f"mean={web_delta['mean']} median={web_delta['median']}"
+        )
     if report["country_stable_rate"] is not None:
         print(f"Country stable rate: {report['country_stable_rate']:.2f}%")
     backtrack = report["backtrack_conflict_rate"]

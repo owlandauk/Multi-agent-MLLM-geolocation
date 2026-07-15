@@ -26,7 +26,7 @@ from modules.pomdp import POMDPModule
 from country_aliases import canonicalize_country
 from web_search import WebSearchClient, format_search_evidence
 from config import (
-    PRIOR_TEMP, PRIOR_CUTOFF, TRANSITION_THR,
+    PRIOR_TEMP, PRIOR_CUTOFF, TRANSITION_THR, ENHANCE_THR,
     VERIFY_MAX_NEW_TOKENS, POMDP_MAX_NEW_TOKENS,
     STRONG_POSTERIOR_THR, STABLE_MARGIN_THR, STABLE_ENTROPY_THR,
     GUARDED_DESCENT_THR, COUNTRY_REPLACE_TOP_THR,
@@ -184,11 +184,18 @@ def _should_replace_country(posterior: dict[str, float]) -> bool:
     )
 
 
-def _should_web_enhance_country(posterior: dict[str, float]) -> bool:
-    """Trigger web fallback only for ambiguous country posteriors."""
+def _should_web_enhance_country(posterior: dict[str, float], visual_delta: float) -> bool:
+    """Trigger web fallback after visual evidence stops changing belief.
+
+    This follows GeoBayes's enhancement idea more closely than a pure
+    low-confidence fallback: search only when the country posterior is still
+    uncertain and the latest visual verification produces little posterior gain
+    (delta P below ENHANCE_THR).
+    """
     stats = _posterior_stats(posterior)
     return (
-        stats["top"] < WEB_SEARCH_TOP_THR
+        visual_delta < ENHANCE_THR
+        and stats["top"] < WEB_SEARCH_TOP_THR
         and stats["margin"] < WEB_SEARCH_MARGIN_THR
     )
 
@@ -205,7 +212,8 @@ def _web_enhance_context(posterior: dict[str, float], query: str, evidence: str)
     stats = _posterior_stats(posterior)
     return (
         "External web search fallback was triggered because the country posterior "
-        f"remained ambiguous: top={stats['top']:.2f}, margin={stats['margin']:.2f}, "
+        f"remained ambiguous and visual verification stagnated. "
+        f"top={stats['top']:.2f}, margin={stats['margin']:.2f}, "
         f"entropy={stats['entropy']:.2f}. Previous top candidates: "
         f"{_format_top_candidates(posterior, 5)}. Search query: {query}. "
         "Use the search snippets only as supporting evidence; visual evidence still has priority. "
@@ -377,13 +385,19 @@ class GeoPipeline:
         initial_posterior: dict[str, float],
         initial_plan: list[dict],
         key_evidence: list[str],
-    ) -> tuple[dict, list[str]]:
+    ) -> tuple[dict, list[str], float]:
         """
-        Run one hierarchy level. Returns (final_posterior, updated_key_evidence).
+        Run one hierarchy level.
+
+        Returns (final_posterior, updated_key_evidence, last_delta_p), where
+        last_delta_p is the top-posterior change after the latest visual
+        verification evidence. GeoBayes uses this kind of posterior gain to
+        decide when external evidence enhancement is useful.
         """
         posterior = dict(initial_posterior)
         pending   = list(initial_plan)
         step      = 0
+        visual_delta = 0.0
         evidence_scores_all: list[dict[str, float]] = []
 
         while True:
@@ -408,7 +422,9 @@ class GeoPipeline:
             evidence_scores_all.append(w_scores)
 
             # DST: fuse all evidence so far into new posterior
+            prev_top = max(posterior.values(), default=0.0)
             posterior = self.dst.fuse(initial_posterior, evidence_scores_all)
+            visual_delta = max(0.0, max(posterior.values(), default=0.0) - prev_top)
 
             # track key evidence (high-information clues)
             max_w = max(w_scores.values(), default=1.0)
@@ -417,16 +433,17 @@ class GeoPipeline:
 
             step += 1
 
-        return posterior, key_evidence
+        return posterior, key_evidence, visual_delta
 
     def _web_enhance_country(
         self,
         image: Image.Image,
         posterior: dict[str, float],
         key_evidence: list[str],
-    ) -> tuple[dict[str, float], list[str], str, str] | None:
+        visual_delta: float,
+    ) -> tuple[dict[str, float], list[str], str, str, float] | None:
         """Use optional web search snippets to re-run ambiguous country inference."""
-        if not _should_web_enhance_country(posterior):
+        if not _should_web_enhance_country(posterior, visual_delta):
             return None
 
         query = _build_web_search_query(posterior, key_evidence)
@@ -437,11 +454,11 @@ class GeoPipeline:
 
         context = _web_enhance_context(posterior, query, search_evidence)
         prior, plan, raw_resp = self._hypothesize(image, "country", context)
-        enhanced_posterior, enhanced_evidence = self._run_level(
+        enhanced_posterior, enhanced_evidence, web_delta = self._run_level(
             image, "country", prior, plan, key_evidence
         )
         enhanced_evidence.append(f"web search: {search_evidence[:120]}")
-        return enhanced_posterior, enhanced_evidence, raw_resp, query
+        return enhanced_posterior, enhanced_evidence, raw_resp, query, web_delta
 
     def predict(self, image: Image.Image) -> dict:
         """
@@ -460,7 +477,7 @@ class GeoPipeline:
             prior, plan, raw_resp = self._hypothesize(image, level, context)
             result[f"{level}_raw_response"] = raw_resp
 
-            posterior, key_evidence = self._run_level(
+            posterior, key_evidence, visual_delta = self._run_level(
                 image, level, prior, plan, key_evidence
             )
 
@@ -469,7 +486,7 @@ class GeoPipeline:
                     replace_context = _replace_context(level, posterior, key_evidence)
                     prior, plan, raw_resp = self._hypothesize(image, level, replace_context)
                     result[f"{level}_raw_response"] = raw_resp
-                    posterior, key_evidence = self._run_level(
+                    posterior, key_evidence, visual_delta = self._run_level(
                         image, level, prior, plan, key_evidence
                     )
                     result["country_replaced"] = True
@@ -477,11 +494,13 @@ class GeoPipeline:
                         break
 
             if level == "country":
-                enhanced = self._web_enhance_country(image, posterior, key_evidence)
+                result["country_visual_delta"] = visual_delta
+                enhanced = self._web_enhance_country(image, posterior, key_evidence, visual_delta)
                 if enhanced is not None:
-                    posterior, key_evidence, raw_resp, web_query = enhanced
+                    posterior, key_evidence, raw_resp, web_query, web_delta = enhanced
                     result["country_web_enhanced"] = True
                     result["country_web_search_query"] = web_query
+                    result["country_web_delta"] = web_delta
                     result[f"{level}_raw_response"] = raw_resp
 
             if level in ("city", "street"):
@@ -521,7 +540,7 @@ class GeoPipeline:
         level: str,
         contexts: list[str],
         key_evidence: list[list[str]],
-    ) -> tuple[list[str], list[dict[str, float]]]:
+    ) -> tuple[list[str], list[dict[str, float]], list[float]]:
         """Run one hierarchy level for a batch and update key_evidence in place."""
         n = len(images)
         hyp_messages = [_hypothesize_prompt(images[i], level, contexts[i]) for i in range(n)]
@@ -543,6 +562,7 @@ class GeoPipeline:
         pending = [list(pl) for pl in plans]
         steps = [0] * n
         ev_scores_all = [[] for _ in range(n)]
+        visual_deltas = [0.0] * n
 
         while True:
             active = [
@@ -597,7 +617,9 @@ class GeoPipeline:
             for k, i in enumerate(active):
                 w_scores = sl_results[k]
                 ev_scores_all[i].append(w_scores)
+                prev_top = max(posteriors[i].values(), default=0.0)
                 posteriors[i] = self.dst.fuse(priors[i], ev_scores_all[i])
+                visual_deltas[i] = max(0.0, max(posteriors[i].values(), default=0.0) - prev_top)
 
                 max_w = max(w_scores.values(), default=1.0)
                 if max_w > 1.5:
@@ -605,7 +627,7 @@ class GeoPipeline:
 
                 steps[i] += 1
 
-        return hyp_responses, posteriors
+        return hyp_responses, posteriors, visual_deltas
 
     def predict_batch(self, images: list) -> list[dict]:
         """
@@ -633,7 +655,7 @@ class GeoPipeline:
             subset_images = [images[i] for i in level_indices]
             subset_contexts = [contexts[i] for i in level_indices]
             subset_key_evidence = [key_evidence[i] for i in level_indices]
-            raw_responses, posteriors_subset = self._run_level_batch(
+            raw_responses, posteriors_subset, deltas_subset = self._run_level_batch(
                 subset_images, level, subset_contexts, subset_key_evidence
             )
             posteriors_by_idx = {
@@ -641,6 +663,9 @@ class GeoPipeline:
             }
             raw_by_idx = {
                 idx: raw for idx, raw in zip(level_indices, raw_responses)
+            }
+            visual_delta_by_idx = {
+                idx: delta for idx, delta in zip(level_indices, deltas_subset)
             }
 
             # Replace: only regenerate the country candidate set when belief is
@@ -657,32 +682,39 @@ class GeoPipeline:
                         for i in unstable
                     ]
                     replace_key_evidence = [key_evidence[i] for i in unstable]
-                    repl_raw, repl_posts = self._run_level_batch(
+                    repl_raw, repl_posts, repl_deltas = self._run_level_batch(
                         replace_images, level, replace_contexts, replace_key_evidence
                     )
-                    for idx, raw, post in zip(unstable, repl_raw, repl_posts):
+                    for idx, raw, post, delta in zip(unstable, repl_raw, repl_posts, repl_deltas):
                         raw_by_idx[idx] = raw
                         posteriors_by_idx[idx] = post
+                        visual_delta_by_idx[idx] = delta
                         results[idx]["country_replaced"] = True
                     unstable = [idx for idx in unstable if _should_replace_country(posteriors_by_idx[idx])]
 
             if level == "country":
                 web_unstable = [
                     idx for idx in level_indices
-                    if _should_web_enhance_country(posteriors_by_idx[idx])
+                    if _should_web_enhance_country(
+                        posteriors_by_idx[idx], visual_delta_by_idx.get(idx, 0.0)
+                    )
                 ]
                 for idx in web_unstable:
                     enhanced = self._web_enhance_country(
-                        images[idx], posteriors_by_idx[idx], key_evidence[idx]
+                        images[idx],
+                        posteriors_by_idx[idx],
+                        key_evidence[idx],
+                        visual_delta_by_idx.get(idx, 0.0),
                     )
                     if enhanced is None:
                         continue
-                    post, enhanced_key_evidence, raw, web_query = enhanced
+                    post, enhanced_key_evidence, raw, web_query, web_delta = enhanced
                     posteriors_by_idx[idx] = post
                     key_evidence[idx] = enhanced_key_evidence
                     raw_by_idx[idx] = raw
                     results[idx]["country_web_enhanced"] = True
                     results[idx]["country_web_search_query"] = web_query
+                    results[idx]["country_web_delta"] = web_delta
 
             # ── Collect level results ───────────────────────────────────────────
             for i in level_indices:
@@ -701,6 +733,9 @@ class GeoPipeline:
                 results[i][level] = best
                 results[i][f"{level}_posterior"] = posterior
                 results[i][f"{level}_stable"] = _stable_for_descent(posterior)
+
+                if level == "country":
+                    results[i]["country_visual_delta"] = visual_delta_by_idx.get(i, 0.0)
 
                 if level == "country" and (
                     posterior.get(best, 0) < 0.3 or not _allow_guarded_descent(posterior)

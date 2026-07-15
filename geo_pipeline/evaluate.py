@@ -218,6 +218,8 @@ def evaluate(args):
                 "country_replaced": bool(pred.get("country_replaced")),
                 "country_web_enhanced": bool(pred.get("country_web_enhanced")),
                 "country_web_search_query": pred.get("country_web_search_query"),
+                "country_visual_delta": pred.get("country_visual_delta"),
+                "country_web_delta": pred.get("country_web_delta"),
                 "city_backtrack_conflicts": pred.get("city_backtrack_conflicts", []),
                 "street_backtrack_conflicts": pred.get("street_backtrack_conflicts", []),
                 "raw_country_response": pred.get("country_raw_response"),
