@@ -216,6 +216,8 @@ def evaluate(args):
                 "city_stable": pred.get("city_stable"),
                 "street_stable": pred.get("street_stable"),
                 "country_replaced": bool(pred.get("country_replaced")),
+                "country_web_enhanced": bool(pred.get("country_web_enhanced")),
+                "country_web_search_query": pred.get("country_web_search_query"),
                 "city_backtrack_conflicts": pred.get("city_backtrack_conflicts", []),
                 "street_backtrack_conflicts": pred.get("street_backtrack_conflicts", []),
                 "raw_country_response": pred.get("country_raw_response"),

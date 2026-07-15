@@ -30,6 +30,13 @@ COUNTRY_REPLACE_TOP_THR    = 0.45
 COUNTRY_REPLACE_MARGIN_THR = 0.02
 COUNTRY_REPLACE_ATTEMPTS = 1
 
+# Optional GeoBayes-style web evidence enhancement. Disabled by default because
+# HPC compute nodes may not have outbound network access and web search can be slow.
+WEB_SEARCH_TOP_THR = 0.60
+WEB_SEARCH_MARGIN_THR = ENHANCE_THR
+WEB_SEARCH_MAX_RESULTS = 3
+WEB_SEARCH_TIMEOUT = 8
+
 # ── SL (single-source uncertainty) ────────────────────────────────────────────
 SL_N_SAMPLES    = 5      # samples per hypothesis for uncertainty estimation in SLModule
 SL_TEMPERATURE  = 0.8    # sampling temperature

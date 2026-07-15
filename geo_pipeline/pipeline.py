@@ -24,12 +24,14 @@ from modules.sl import SLModule
 from modules.dst import DSTModule
 from modules.pomdp import POMDPModule
 from country_aliases import canonicalize_country
+from web_search import WebSearchClient, format_search_evidence
 from config import (
     PRIOR_TEMP, PRIOR_CUTOFF, TRANSITION_THR,
     VERIFY_MAX_NEW_TOKENS, POMDP_MAX_NEW_TOKENS,
     STRONG_POSTERIOR_THR, STABLE_MARGIN_THR, STABLE_ENTROPY_THR,
     GUARDED_DESCENT_THR, COUNTRY_REPLACE_TOP_THR,
     COUNTRY_REPLACE_MARGIN_THR, COUNTRY_REPLACE_ATTEMPTS,
+    WEB_SEARCH_TOP_THR, WEB_SEARCH_MARGIN_THR,
 )
 
 LEVELS = ["country", "city", "street"]
@@ -182,6 +184,36 @@ def _should_replace_country(posterior: dict[str, float]) -> bool:
     )
 
 
+def _should_web_enhance_country(posterior: dict[str, float]) -> bool:
+    """Trigger web fallback only for ambiguous country posteriors."""
+    stats = _posterior_stats(posterior)
+    return (
+        stats["top"] < WEB_SEARCH_TOP_THR
+        and stats["margin"] < WEB_SEARCH_MARGIN_THR
+    )
+
+
+def _build_web_search_query(posterior: dict[str, float], key_evidence: list[str]) -> str:
+    candidates = _format_top_candidates(posterior, 5) or "unknown country"
+    clues = "; ".join(key_evidence[-3:])
+    if clues:
+        return f"geolocation visual clues {clues} likely country among {candidates}"[:280]
+    return f"geolocation likely country among {candidates} visual clues"[:280]
+
+
+def _web_enhance_context(posterior: dict[str, float], query: str, evidence: str) -> str:
+    stats = _posterior_stats(posterior)
+    return (
+        "External web search fallback was triggered because the country posterior "
+        f"remained ambiguous: top={stats['top']:.2f}, margin={stats['margin']:.2f}, "
+        f"entropy={stats['entropy']:.2f}. Previous top candidates: "
+        f"{_format_top_candidates(posterior, 5)}. Search query: {query}. "
+        "Use the search snippets only as supporting evidence; visual evidence still has priority. "
+        "Return country names only and avoid inventing a country not supported by either the image or snippets. "
+        f"Search snippets:\n{evidence}"
+    )
+
+
 def _country_candidate_set(country_posterior: dict[str, float], k: int = 3) -> set[str]:
     return {
         country
@@ -322,6 +354,7 @@ class GeoPipeline:
         self.sl    = SLModule(mllm)
         self.dst   = DSTModule()
         self.pomdp = POMDPModule(mllm)
+        self.web_search = WebSearchClient()
 
     def _hypothesize(self, image: Image.Image, level: str, context: str = "") -> tuple[dict, list, str]:
         """Returns (prior_dict, verification_plan_list, raw_response)."""
@@ -386,6 +419,30 @@ class GeoPipeline:
 
         return posterior, key_evidence
 
+    def _web_enhance_country(
+        self,
+        image: Image.Image,
+        posterior: dict[str, float],
+        key_evidence: list[str],
+    ) -> tuple[dict[str, float], list[str], str, str] | None:
+        """Use optional web search snippets to re-run ambiguous country inference."""
+        if not _should_web_enhance_country(posterior):
+            return None
+
+        query = _build_web_search_query(posterior, key_evidence)
+        search_data = self.web_search.search(query)
+        search_evidence = format_search_evidence(search_data)
+        if not search_evidence:
+            return None
+
+        context = _web_enhance_context(posterior, query, search_evidence)
+        prior, plan, raw_resp = self._hypothesize(image, "country", context)
+        enhanced_posterior, enhanced_evidence = self._run_level(
+            image, "country", prior, plan, key_evidence
+        )
+        enhanced_evidence.append(f"web search: {search_evidence[:120]}")
+        return enhanced_posterior, enhanced_evidence, raw_resp, query
+
     def predict(self, image: Image.Image) -> dict:
         """
         Full coarse-to-fine inference for one image.
@@ -418,6 +475,14 @@ class GeoPipeline:
                     result["country_replaced"] = True
                     if _stable_for_descent(posterior):
                         break
+
+            if level == "country":
+                enhanced = self._web_enhance_country(image, posterior, key_evidence)
+                if enhanced is not None:
+                    posterior, key_evidence, raw_resp, web_query = enhanced
+                    result["country_web_enhanced"] = True
+                    result["country_web_search_query"] = web_query
+                    result[f"{level}_raw_response"] = raw_resp
 
             if level in ("city", "street"):
                 filtered, conflicts = _filter_child_posterior(
@@ -600,6 +665,24 @@ class GeoPipeline:
                         posteriors_by_idx[idx] = post
                         results[idx]["country_replaced"] = True
                     unstable = [idx for idx in unstable if _should_replace_country(posteriors_by_idx[idx])]
+
+            if level == "country":
+                web_unstable = [
+                    idx for idx in level_indices
+                    if _should_web_enhance_country(posteriors_by_idx[idx])
+                ]
+                for idx in web_unstable:
+                    enhanced = self._web_enhance_country(
+                        images[idx], posteriors_by_idx[idx], key_evidence[idx]
+                    )
+                    if enhanced is None:
+                        continue
+                    post, enhanced_key_evidence, raw, web_query = enhanced
+                    posteriors_by_idx[idx] = post
+                    key_evidence[idx] = enhanced_key_evidence
+                    raw_by_idx[idx] = raw
+                    results[idx]["country_web_enhanced"] = True
+                    results[idx]["country_web_search_query"] = web_query
 
             # ── Collect level results ───────────────────────────────────────────
             for i in level_indices:
