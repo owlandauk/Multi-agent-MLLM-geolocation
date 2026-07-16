@@ -48,8 +48,11 @@ ENV_DIR=/hkfs/work/workspace/scratch/tj3409-SichengZuo/envs/geo-vllm
 cd "${REPO_DIR}"
 mkdir -p geo_pipeline/results
 
-JOB_TMP_DIR="${REPO_DIR}/.tmp/slurm_${SLURM_JOB_ID:-manual}"
-mkdir -p "${JOB_TMP_DIR}"
+JOB_TMP_DIR="/scratch/slurm_tmpdir/job_${SLURM_JOB_ID:-manual}"
+if [ ! -d "${JOB_TMP_DIR}" ] || [ ! -w "${JOB_TMP_DIR}" ]; then
+  JOB_TMP_DIR="/tmp/${USER}_${SLURM_JOB_ID:-manual}"
+  mkdir -p "${JOB_TMP_DIR}"
+fi
 export TMPDIR="${JOB_TMP_DIR}"
 export TMP="${JOB_TMP_DIR}"
 export TEMP="${JOB_TMP_DIR}"
