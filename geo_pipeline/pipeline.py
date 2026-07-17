@@ -174,9 +174,8 @@ def _stable_for_descent(posterior: dict[str, float]) -> bool:
 
 
 def _allow_guarded_descent(posterior: dict[str, float]) -> bool:
-    """Allow child reasoning only when country belief is both plausible and stable."""
-    stats = _posterior_stats(posterior)
-    return stats["top"] >= GUARDED_DESCENT_THR and _stable_for_descent(posterior)
+    """Allow child reasoning with conflict filtering when country is plausible."""
+    return _posterior_stats(posterior)["top"] >= GUARDED_DESCENT_THR
 
 
 def _descent_block_reason(posterior: dict[str, float]) -> str | None:
@@ -185,8 +184,6 @@ def _descent_block_reason(posterior: dict[str, float]) -> str | None:
         return "very_low_country_confidence"
     if stats["top"] < GUARDED_DESCENT_THR:
         return "weak_country_top_mass"
-    if not _stable_for_descent(posterior):
-        return "unstable_country_posterior"
     return None
 
 
