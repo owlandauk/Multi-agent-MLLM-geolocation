@@ -294,10 +294,24 @@ def _context_for_level(level: str, result: dict, key_evidence: list[str]) -> str
     clues = "; ".join(key_evidence[-3:])
     if level == "city":
         parent = result.get("country", "")
-        return f"Located in {parent}. Key clues: {clues}" if parent else f"Key clues: {clues}"
+        if parent:
+            return (
+                f"Previous country estimate: {parent}. Treat it as a weak prior, "
+                "not a hard constraint; include another country/city if visual evidence supports it. "
+                f"Key clues: {clues}"
+            )
+        return f"Key clues: {clues}"
     if level == "street":
-        parent = result.get("city") or result.get("country", "")
-        return f"Located in {parent}. Key clues: {clues}" if parent else f"Key clues: {clues}"
+        city = result.get("city", "")
+        country = result.get("country", "")
+        parent = ", ".join(x for x in (city, country) if x)
+        if parent:
+            return (
+                f"Previous coarse estimate: {parent}. Treat it as a weak prior, "
+                "not a hard constraint; prefer the visible street/district/landmark evidence. "
+                f"Key clues: {clues}"
+            )
+        return f"Key clues: {clues}"
     return ""
 
 
