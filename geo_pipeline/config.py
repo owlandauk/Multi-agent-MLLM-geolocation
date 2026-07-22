@@ -30,6 +30,14 @@ COUNTRY_REPLACE_TOP_THR    = 0.45
 COUNTRY_REPLACE_MARGIN_THR = 0.02
 COUNTRY_REPLACE_ATTEMPTS = 0
 
+# ── Continent-first country calibration ──────────────────────────────────────
+# The continent stage is a weak prior for country inference. It reduces obvious
+# cross-continent country defaults without hard-blocking North America or child
+# descent, avoiding the over-conservative v9 behavior.
+CONTINENT_REG_MIN_TOP = 0.45
+CONTINENT_REG_STRENGTH = 0.35
+CONTINENT_REG_FLOOR = 0.15
+
 # Optional GeoBayes-style web evidence enhancement. Disabled by default because
 # HPC compute nodes may not have outbound network access and web search can be slow.
 WEB_SEARCH_TOP_THR = 0.60

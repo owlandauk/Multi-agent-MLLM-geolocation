@@ -24,11 +24,19 @@ _THRESHOLD_LABELS = {
 }
 
 
-def _top_mass(record: dict) -> float | None:
-    posterior = record.get("country_posterior") or {}
+def _posterior_top_mass(record: dict, field: str) -> float | None:
+    posterior = record.get(field) or {}
     if not posterior:
         return None
     return max(float(v) for v in posterior.values())
+
+
+def _top_mass(record: dict) -> float | None:
+    return _posterior_top_mass(record, "country_posterior")
+
+
+def _continent_top_mass(record: dict) -> float | None:
+    return _posterior_top_mass(record, "continent_posterior")
 
 
 def _country_conflicts(record: dict) -> list[str]:
@@ -110,6 +118,19 @@ def _mass_bucket(record: dict) -> str:
     return ">=0.65"
 
 
+def _continent_mass_bucket(record: dict) -> str:
+    mass = _continent_top_mass(record)
+    if mass is None:
+        return "missing"
+    if mass < 0.45:
+        return "<0.45"
+    if mass < 0.55:
+        return "0.45-0.55"
+    if mass < 0.65:
+        return "0.55-0.65"
+    return ">=0.65"
+
+
 def analyze(records: list[dict]) -> dict:
     total = len(records)
     correct = {thr: 0 for thr in EVAL_THRESHOLDS}
@@ -121,6 +142,7 @@ def analyze(records: list[dict]) -> dict:
 
     unknown = sum(1 for r in records if not canonicalize_country(r.get("pred_country") or ""))
     masses = [m for r in records if (m := _top_mass(r)) is not None]
+    continent_masses = [m for r in records if (m := _continent_top_mass(r)) is not None]
     source_counts = Counter(r.get("geocode_source") or "missing" for r in records)
     consistency_counts = Counter(r.get("country_consistency") or "missing" for r in records)
     conflicts = [r for r in records if _country_conflicts(r)]
@@ -136,6 +158,9 @@ def analyze(records: list[dict]) -> dict:
     ]
     country_stable_known = [r for r in records if r.get("country_stable") is not None]
     country_stable = sum(1 for r in country_stable_known if r.get("country_stable"))
+    continent_stable_known = [r for r in records if r.get("continent_stable") is not None]
+    continent_stable = sum(1 for r in continent_stable_known if r.get("continent_stable"))
+    country_continent_regularized = sum(1 for r in records if r.get("country_continent_regularized"))
     city_backtrack = sum(1 for r in records if r.get("city_backtrack_conflicts"))
     street_backtrack = sum(1 for r in records if r.get("street_backtrack_conflicts"))
     has_soft_conflict_fields = any(
@@ -198,6 +223,13 @@ def analyze(records: list[dict]) -> dict:
             "mean": round(mean(masses), 4) if masses else None,
             "median": round(median(masses), 4) if masses else None,
         },
+        "continent_top_mass": {
+            "mean": round(mean(continent_masses), 4) if continent_masses else None,
+            "median": round(median(continent_masses), 4) if continent_masses else None,
+        },
+        "country_continent_regularized_rate": (
+            round(100.0 * country_continent_regularized / total, 2) if total else 0.0
+        ),
         "geocode_source": dict(source_counts),
         "country_consistency": dict(consistency_counts),
         "country_child_conflict_rate": round(100.0 * len(conflicts) / total, 2) if total else 0.0,
@@ -215,6 +247,10 @@ def analyze(records: list[dict]) -> dict:
             round(100.0 * country_stable / len(country_stable_known), 2)
             if country_stable_known else None
         ),
+        "continent_stable_rate": (
+            round(100.0 * continent_stable / len(continent_stable_known), 2)
+            if continent_stable_known else None
+        ),
         "backtrack_conflict_rate": {
             "city": round(100.0 * city_backtrack / total, 2) if total else 0.0,
             "street": round(100.0 * street_backtrack / total, 2) if total else 0.0,
@@ -227,6 +263,10 @@ def analyze(records: list[dict]) -> dict:
         "country_descent_blocked_reasons": dict(descent_block_reasons),
         "diagnostic_buckets": {
             "country_top_mass": _bucket_accuracy(records, _mass_bucket),
+            "continent_top_mass": _bucket_accuracy(records, _continent_mass_bucket),
+            "country_continent_regularized": _bucket_accuracy(
+                records, lambda r: bool(r.get("country_continent_regularized"))
+            ),
             "country_stable": _bucket_accuracy(records, lambda r: r.get("country_stable")),
             "geocode_source": _bucket_accuracy(records, lambda r: r.get("geocode_source") or "missing"),
             "country_web_enhanced": _bucket_accuracy(records, lambda r: bool(r.get("country_web_enhanced"))),
@@ -284,6 +324,17 @@ def _print_report(report: dict) -> None:
     print(f"\nUnknown country rate: {report['unknown_country_rate']:.2f}%")
     mass = report["country_top_mass"]
     print(f"Country posterior top mass: mean={mass['mean']} median={mass['median']}")
+    continent_mass = report.get("continent_top_mass", {})
+    if continent_mass.get("mean") is not None:
+        print(
+            "Continent posterior top mass: "
+            f"mean={continent_mass['mean']} median={continent_mass['median']}"
+        )
+    if report.get("country_continent_regularized_rate") is not None:
+        print(
+            "Country-continent regularized rate: "
+            f"{report['country_continent_regularized_rate']:.2f}%"
+        )
     print(f"Country-child conflict rate: {report['country_child_conflict_rate']:.2f}%")
     print(f"Country replace rate: {report['country_replaced_rate']:.2f}%")
     print(f"Country web enhance rate: {report['country_web_enhanced_rate']:.2f}%")
@@ -299,6 +350,8 @@ def _print_report(report: dict) -> None:
             "Country web delta: "
             f"mean={web_delta['mean']} median={web_delta['median']}"
         )
+    if report.get("continent_stable_rate") is not None:
+        print(f"Continent stable rate: {report['continent_stable_rate']:.2f}%")
     if report["country_stable_rate"] is not None:
         print(f"Country stable rate: {report['country_stable_rate']:.2f}%")
     backtrack = report["backtrack_conflict_rate"]
@@ -355,7 +408,13 @@ def _print_report(report: dict) -> None:
     buckets = report.get("diagnostic_buckets", {})
     if buckets:
         print("\nDiagnostic buckets (Country <750km / Continent <2500km)")
-        for bucket_name in ("country_top_mass", "geocode_source", "country_descent_blocked_reason"):
+        for bucket_name in (
+            "country_top_mass",
+            "continent_top_mass",
+            "country_continent_regularized",
+            "geocode_source",
+            "country_descent_blocked_reason",
+        ):
             bucket = buckets.get(bucket_name, {})
             if not bucket:
                 continue

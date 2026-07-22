@@ -223,10 +223,16 @@ def evaluate(args):
                 "dist_km":      dist_km,
                 "geocode_source": geocode_source,
                 "country_consistency": country_consistency,
+                "continent_posterior": {
+                    k: round(float(v), 4)
+                    for k, v in (pred.get("continent_posterior") or {}).items()
+                },
                 "country_posterior": {
                     k: round(float(v), 4)
                     for k, v in (pred.get("country_posterior") or {}).items()
                 },
+                "country_continent_regularized": bool(pred.get("country_continent_regularized")),
+                "continent_stable": pred.get("continent_stable"),
                 "country_stable": pred.get("country_stable"),
                 "city_stable": pred.get("city_stable"),
                 "street_stable": pred.get("street_stable"),
@@ -238,6 +244,7 @@ def evaluate(args):
                 "country_descent_blocked_reason": pred.get("country_descent_blocked_reason"),
                 "city_backtrack_conflicts": pred.get("city_backtrack_conflicts", []),
                 "street_backtrack_conflicts": pred.get("street_backtrack_conflicts", []),
+                "raw_continent_response": pred.get("continent_raw_response"),
                 "raw_country_response": pred.get("country_raw_response"),
                 "raw_city_response":    pred.get("city_raw_response"),
                 "raw_street_response":  pred.get("street_raw_response"),

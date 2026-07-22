@@ -3,12 +3,12 @@ Main pipeline: SL + DST + POMDP on YFCC4K.
 
 Flow (one image):
   1. Hypothesize  — MLLM global analysis → hypothesis set H_0 + verification plan V_0
-  2. Per level (country → city → street):
+  2. Per level (continent → country → city → street):
        a. SL: score each pending evidence against each hypothesis (uncertainty-aware)
        b. DST: fuse all evidence BBAs into updated posterior
        c. POMDP: select next verification task (LLM policy)
        d. Repeat until POMDP stopping condition
-       e. Hierarchical transition if max_posterior > TRANSITION_THR
+       e. Continent posterior weakly regularizes country posterior; finer descent stays unconstrained
   3. Output MAP location → geocode → (lat, lon)
 """
 
@@ -23,7 +23,7 @@ from models.mllm_client import MLLMClient
 from modules.sl import SLModule
 from modules.dst import DSTModule
 from modules.pomdp import POMDPModule
-from country_aliases import canonicalize_country
+from country_aliases import canonicalize_country, continent_of
 from web_search import WebSearchClient, format_search_evidence
 from config import (
     PRIOR_TEMP, PRIOR_CUTOFF, TRANSITION_THR, ENHANCE_THR,
@@ -31,10 +31,11 @@ from config import (
     STRONG_POSTERIOR_THR, STABLE_MARGIN_THR, STABLE_ENTROPY_THR,
     GUARDED_DESCENT_THR, COUNTRY_REPLACE_TOP_THR,
     COUNTRY_REPLACE_MARGIN_THR, COUNTRY_REPLACE_ATTEMPTS,
+    CONTINENT_REG_MIN_TOP, CONTINENT_REG_STRENGTH, CONTINENT_REG_FLOOR,
     WEB_SEARCH_TOP_THR, WEB_SEARCH_MARGIN_THR, WEB_SEARCH_REQUIRE_ENTITY,
 )
 
-LEVELS = ["country", "city", "street"]
+LEVELS = ["continent", "country", "city", "street"]
 
 _FENCED_JSON_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL | re.IGNORECASE)
 _SEARCH_ENTITY_RE = re.compile(
@@ -112,6 +113,62 @@ def _softmax_prior(scores: dict[str, float]) -> dict[str, float]:
     return {h: v / total for h, v in exps.items()}
 
 
+def _canonicalize_continent(raw: str) -> str | None:
+    if not raw:
+        return None
+    low = raw.strip().lower()
+    aliases = {
+        "africa": "Africa",
+        "asia": "Asia",
+        "europe": "Europe",
+        "north america": "North America",
+        "northern america": "North America",
+        "south america": "South America",
+        "oceania": "Oceania",
+        "australia/oceania": "Oceania",
+        "australasia": "Oceania",
+    }
+    if low in aliases:
+        return aliases[low]
+    for alias, continent in aliases.items():
+        if alias in low:
+            return continent
+    return None
+
+
+def _renormalize_posterior(posterior: dict[str, float]) -> dict[str, float]:
+    total = sum(float(v) for v in (posterior or {}).values())
+    if total <= 0:
+        return dict(posterior or {})
+    return {k: float(v) / total for k, v in posterior.items()}
+
+
+def _regularize_country_by_continent(
+    country_posterior: dict[str, float],
+    continent_posterior: dict[str, float],
+) -> tuple[dict[str, float], bool]:
+    if not country_posterior or not continent_posterior:
+        return country_posterior, False
+    if max(continent_posterior.values(), default=0.0) < CONTINENT_REG_MIN_TOP:
+        return country_posterior, False
+
+    adjusted = {}
+    changed = False
+    for country, prob in country_posterior.items():
+        continent = continent_of(country)
+        if not continent:
+            adjusted[country] = prob
+            continue
+        continent_mass = max(
+            CONTINENT_REG_FLOOR,
+            float(continent_posterior.get(continent, 0.0)),
+        )
+        multiplier = (1.0 - CONTINENT_REG_STRENGTH) + CONTINENT_REG_STRENGTH * continent_mass
+        adjusted[country] = float(prob) * multiplier
+        changed = changed or abs(multiplier - 1.0) > 1e-9
+    return _renormalize_posterior(adjusted), changed
+
+
 def _collect_scores(hypotheses: list, level: str) -> dict[str, float]:
     """Collect {location: confidence} from parsed hypotheses.
 
@@ -129,7 +186,12 @@ def _collect_scores(hypotheses: list, level: str) -> dict[str, float]:
         if not loc:
             continue
         conf = h.get("confidence", 0.5)
-        if level == "country":
+        if level == "continent":
+            canon_continent = _canonicalize_continent(loc)
+            if canon_continent is None:
+                continue
+            loc = canon_continent
+        elif level == "country":
             canon = canonicalize_country(loc)
             if canon is None:
                 continue  # drop non-country strings like "Southeast Asia"
@@ -292,6 +354,16 @@ def _replace_context(level: str, posterior: dict[str, float], key_evidence: list
 
 def _context_for_level(level: str, result: dict, key_evidence: list[str]) -> str:
     clues = "; ".join(key_evidence[-3:])
+    if level == "country":
+        continents = _format_top_candidates(result.get("continent_posterior", {}), 3)
+        if continents:
+            return (
+                f"Continent candidates from a coarse pass: {continents}. Treat them as weak priors, "
+                "not hard constraints. Return country names only. If visual evidence is generic, "
+                "keep plausible countries across the candidate continents instead of defaulting to a familiar country. "
+                f"Key clues: {clues}"
+            )
+        return f"Key clues: {clues}"
     if level == "city":
         parent = result.get("country", "")
         if parent:
@@ -319,9 +391,25 @@ def _context_for_level(level: str, result: dict, key_evidence: list[str]) -> str
 
 def _hypothesize_prompt(image: Image.Image, level: str, context: str = "") -> list:
     level_hint = {
+        "continent": "Identify the most likely continents and generate a plan to verify.",
         "country": "Identify the most likely countries and generate a plan to verify.",
         "city":    "Identify the most likely cities and generate a plan to verify.",
         "street":  "Identify the most likely streets/districts and generate a plan to verify.",
+    }[level]
+    level_rules = {
+        "continent": (
+            "For continent-level reasoning, return continent names only: "
+            "Africa, Asia, Europe, North America, Oceania, or South America. "
+            "Do not return countries, regions, or hemispheres. "
+        ),
+        "country": (
+            "For country-level reasoning, return country names only, not continents or regions. "
+            "Separate direct localizing evidence such as road signs, plates, addresses, named places, landmarks, and place-specific scripts "
+            "from generic cues such as English text, brands, food, ordinary roads, vegetation, indoor objects, or common architecture. "
+            "Generic cues alone must not give high confidence to any familiar country, including United States, Canada, United Kingdom, or Japan. "
+        ),
+        "city": "For city-level reasoning, return city or locality names. ",
+        "street": "For street-level reasoning, return street, district, or landmark names. ",
     }[level]
     return [
         {
@@ -330,8 +418,8 @@ def _hypothesize_prompt(image: Image.Image, level: str, context: str = "") -> li
                 {"type": "image", "image": image},
                 {"type": "text", "text": (
                     f"You are a geolocation expert. {level_hint}\n"
-                    "For country-level reasoning, return country names only, not continents or regions. "
-                    "Use confidence to reflect the visual evidence; keep alternatives only when the image is ambiguous. "
+                    + level_rules
+                    + "Use confidence to reflect direct visual evidence; keep alternatives when the image is ambiguous. "
                     + (f"Prior context: {context}\n" if context else "")
                     + "\nAnalyze this image and respond with valid JSON only, no markdown fences:\n"
                     '{\n'
@@ -487,7 +575,7 @@ class GeoPipeline:
 
         for level in LEVELS:
             # at city/street level, seed hypotheses from prior level result
-            if level != "country" and result:
+            if level != "continent" and result:
                 context = _context_for_level(level, result, key_evidence)
 
             prior, plan, raw_resp = self._hypothesize(image, level, context)
@@ -518,6 +606,12 @@ class GeoPipeline:
                     result["country_web_search_query"] = web_query
                     result["country_web_delta"] = web_delta
                     result[f"{level}_raw_response"] = raw_resp
+
+            if level == "country":
+                posterior, regularized = _regularize_country_by_continent(
+                    posterior, result.get("continent_posterior", {})
+                )
+                result["country_continent_regularized"] = regularized
 
             best = max(posterior, key=posterior.get)
             result[level] = best
@@ -654,7 +748,7 @@ class GeoPipeline:
                 break
 
             # seed context from parent level before hypothesizing the next level
-            if level != "country":
+            if level != "continent":
                 for i in level_indices:
                     contexts[i] = _context_for_level(level, results[i], key_evidence[i])
 
@@ -726,6 +820,13 @@ class GeoPipeline:
             for i in level_indices:
                 posterior = posteriors_by_idx[i]
                 results[i][f"{level}_raw_response"] = raw_by_idx[i]
+
+                if level == "country":
+                    posterior, regularized = _regularize_country_by_continent(
+                        posterior, results[i].get("continent_posterior", {})
+                    )
+                    results[i]["country_continent_regularized"] = regularized
+                    posteriors_by_idx[i] = posterior
 
                 best = max(posterior, key=posterior.get)
                 results[i][level] = best
