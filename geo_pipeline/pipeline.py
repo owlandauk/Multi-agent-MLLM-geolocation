@@ -29,7 +29,8 @@ from config import (
     PRIOR_TEMP, PRIOR_CUTOFF, TRANSITION_THR, ENHANCE_THR,
     VERIFY_MAX_NEW_TOKENS, POMDP_MAX_NEW_TOKENS,
     STRONG_POSTERIOR_THR, STABLE_MARGIN_THR, STABLE_ENTROPY_THR,
-    GUARDED_DESCENT_THR, COUNTRY_REPLACE_TOP_THR,
+    GUARDED_DESCENT_THR, DESCENT_BLOCK_TOP_THR, DESCENT_BLOCK_MARGIN_THR,
+    COUNTRY_REPLACE_TOP_THR,
     COUNTRY_REPLACE_MARGIN_THR, COUNTRY_REPLACE_ATTEMPTS,
     WEB_SEARCH_TOP_THR, WEB_SEARCH_MARGIN_THR, WEB_SEARCH_REQUIRE_ENTITY,
 )
@@ -179,6 +180,17 @@ def _allow_guarded_descent(posterior: dict[str, float]) -> bool:
 
 
 def _descent_block_reason(posterior: dict[str, float]) -> str | None:
+    """Return why country belief is too weak to seed child reasoning."""
+    if not posterior:
+        return "empty_country_posterior"
+    stats = _posterior_stats(posterior)
+    if not _allow_guarded_descent(posterior):
+        return "weak_country_top"
+    if (
+        stats["top"] < DESCENT_BLOCK_TOP_THR
+        and stats["margin"] < DESCENT_BLOCK_MARGIN_THR
+    ):
+        return "flat_country_posterior"
     return None
 
 
@@ -272,7 +284,7 @@ def _filter_child_posterior(
     if not conflicts:
         return posterior, []
     if not filtered:
-        return posterior, conflicts
+        return {"Unknown": 1.0}, conflicts
     total = sum(filtered.values())
     return ({k: v / total for k, v in filtered.items()} if total > 0 else filtered), conflicts
 
@@ -292,23 +304,23 @@ def _replace_context(level: str, posterior: dict[str, float], key_evidence: list
 
 def _context_for_level(level: str, result: dict, key_evidence: list[str]) -> str:
     clues = "; ".join(key_evidence[-3:])
+    country_candidates = _format_top_candidates(result.get("country_posterior", {}), 3)
     if level == "city":
-        parent = result.get("country", "")
+        parent = country_candidates or result.get("country", "")
         if parent:
             return (
-                f"Previous country estimate: {parent}. Treat it as a weak prior, "
-                "not a hard constraint; include another country/city if visual evidence supports it. "
+                f"Country candidates: {parent}. Treat them as weak priors, "
+                "and introduce another country only when directly visible evidence supports it. "
                 f"Key clues: {clues}"
             )
         return f"Key clues: {clues}"
     if level == "street":
         city = result.get("city", "")
-        country = result.get("country", "")
-        parent = ", ".join(x for x in (city, country) if x)
+        parent = ", ".join(x for x in (city, country_candidates or result.get("country", "")) if x)
         if parent:
             return (
-                f"Previous coarse estimate: {parent}. Treat it as a weak prior, "
-                "not a hard constraint; prefer the visible street/district/landmark evidence. "
+                f"Previous coarse estimates: {parent}. Treat them as weak priors, "
+                "and prefer visible street, district, landmark, and signage evidence. "
                 f"Key clues: {clues}"
             )
         return f"Key clues: {clues}"
@@ -331,6 +343,8 @@ def _hypothesize_prompt(image: Image.Image, level: str, context: str = "") -> li
                 {"type": "text", "text": (
                     f"You are a geolocation expert. {level_hint}\n"
                     "For country-level reasoning, return country names only, not continents or regions. "
+                    "Do not infer United States, Canada, or any other country from weak generic cues alone; "
+                    "North America is valid when road signs, traffic infrastructure, license plates, landmarks, vegetation, or architecture support it. "
                     "Use confidence to reflect the visual evidence; keep alternatives only when the image is ambiguous. "
                     + (f"Prior context: {context}\n" if context else "")
                     + "\nAnalyze this image and respond with valid JSON only, no markdown fences:\n"
@@ -518,6 +532,13 @@ class GeoPipeline:
                     result["country_web_search_query"] = web_query
                     result["country_web_delta"] = web_delta
                     result[f"{level}_raw_response"] = raw_resp
+
+            if level in ("city", "street"):
+                posterior, conflicts = _filter_child_posterior(
+                    posterior, result.get("country_posterior", {})
+                )
+                if conflicts:
+                    result[f"{level}_backtrack_conflicts"] = conflicts
 
             best = max(posterior, key=posterior.get)
             result[level] = best
@@ -725,6 +746,14 @@ class GeoPipeline:
             # ── Collect level results ───────────────────────────────────────────
             for i in level_indices:
                 posterior = posteriors_by_idx[i]
+                if level in ("city", "street"):
+                    posterior, conflicts = _filter_child_posterior(
+                        posterior, results[i].get("country_posterior", {})
+                    )
+                    if conflicts:
+                        results[i][f"{level}_backtrack_conflicts"] = conflicts
+                        posteriors_by_idx[i] = posterior
+
                 results[i][f"{level}_raw_response"] = raw_by_idx[i]
 
                 best = max(posterior, key=posterior.get)
