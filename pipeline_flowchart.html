@@ -1,0 +1,752 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GeoPipeline v8 Flowchart</title>
+  <style>
+    :root {
+      --bg: #f5f6f8;
+      --paper: #ffffff;
+      --ink: #19212a;
+      --muted: #5d6978;
+      --line: #cdd5df;
+      --strong: #2f5f8f;
+      --country: #e7f0fb;
+      --city: #e8f5ec;
+      --street: #fff1db;
+      --eval: #efeafd;
+      --ops: #e9f4f5;
+      --risk: #fff7d6;
+      --bad: #fdeceb;
+      --ok: #e7f6ec;
+      --code: #eef1f4;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+      line-height: 1.55;
+    }
+
+    main {
+      max-width: 1220px;
+      margin: 0 auto;
+      padding: 28px 16px 48px;
+    }
+
+    h1, h2, h3 { line-height: 1.2; }
+    h1 { margin: 0 0 8px; font-size: 30px; letter-spacing: 0; }
+    h2 { margin: 0 0 14px; font-size: 21px; }
+    h3 { margin: 0 0 7px; font-size: 15px; }
+    p { margin: 0 0 12px; color: var(--muted); }
+    a { color: var(--strong); }
+    code {
+      background: var(--code);
+      border: 1px solid #e1e5ea;
+      border-radius: 4px;
+      padding: 1px 5px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: .92em;
+    }
+    pre {
+      margin: 10px 0 0;
+      overflow: auto;
+      background: #111827;
+      color: #f9fafb;
+      border-radius: 8px;
+      padding: 13px 14px;
+      font-size: 13px;
+      line-height: 1.45;
+    }
+    pre code { background: transparent; border: 0; padding: 0; color: inherit; }
+
+    .hero {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 20px;
+      margin-bottom: 16px;
+    }
+
+    .hero-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.4fr) minmax(280px, .8fr);
+      gap: 18px;
+      align-items: start;
+    }
+
+    .pill-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 5px 9px;
+      background: #fafbfc;
+      color: var(--muted);
+      font-size: 13px;
+      white-space: nowrap;
+    }
+    .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--strong); }
+
+    .panel {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 18px;
+      margin-top: 16px;
+    }
+
+    .two-col {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 14px;
+    }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(145px, 1fr));
+      gap: 12px;
+      align-items: stretch;
+    }
+
+    .flow.five { grid-template-columns: repeat(5, minmax(150px, 1fr)); }
+    .flow.four { grid-template-columns: repeat(4, minmax(160px, 1fr)); }
+    .flow.three { grid-template-columns: repeat(3, minmax(180px, 1fr)); }
+
+    .node {
+      position: relative;
+      min-height: 122px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      background: var(--paper);
+    }
+    .node p { font-size: 13px; margin-bottom: 0; }
+    .node small { display: block; color: var(--muted); margin-top: 6px; font-size: 12px; }
+    .country { background: var(--country); }
+    .city { background: var(--city); }
+    .street { background: var(--street); }
+    .eval { background: var(--eval); }
+    .ops { background: var(--ops); }
+    .risk { background: var(--risk); }
+    .bad { background: var(--bad); }
+    .ok { background: var(--ok); }
+
+    .arrow::after {
+      content: "→";
+      position: absolute;
+      right: -13px;
+      top: 42%;
+      color: #657282;
+      font-size: 20px;
+      font-weight: 700;
+      z-index: 1;
+    }
+
+    .loop-box {
+      border: 2px solid #9bb6d1;
+      border-radius: 8px;
+      padding: 14px;
+      background: #fbfdff;
+    }
+
+    .note {
+      border-left: 4px solid var(--strong);
+      background: #f7faff;
+      padding: 12px 13px;
+      border-radius: 6px;
+      color: var(--muted);
+      margin-top: 12px;
+    }
+
+    .warn-note {
+      border-left-color: #b7791f;
+      background: var(--risk);
+    }
+
+    .table {
+      display: grid;
+      grid-template-columns: 190px minmax(0, 1fr);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+      margin-top: 12px;
+    }
+    .table div { padding: 10px 12px; border-bottom: 1px solid var(--line); }
+    .table div:nth-child(odd) { background: #f8fafc; font-weight: 650; }
+    .table div:nth-last-child(-n+2) { border-bottom: 0; }
+
+    .glossary {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .term {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      background: #fbfcfd;
+      min-height: 118px;
+    }
+    .term h3 { color: var(--strong); }
+    .term .where { color: var(--muted); font-size: 12px; margin-top: 8px; }
+
+    .timeline {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    ul { margin: 8px 0 0; padding-left: 18px; color: var(--muted); }
+    li { margin: 5px 0; }
+
+    @media (max-width: 980px) {
+      .hero-grid, .two-col, .timeline, .glossary { grid-template-columns: 1fr; }
+      .flow, .flow.five, .flow.four, .flow.three { grid-template-columns: 1fr; }
+      .arrow::after { content: "↓"; right: 50%; top: auto; bottom: -18px; }
+      .table { grid-template-columns: 1fr; }
+      .table div:nth-child(odd) { border-bottom: 0; }
+      .table div:nth-child(even) { background: #fff; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <section class="hero">
+    <div class="hero-grid">
+      <div>
+        <h1>GeoPipeline v8 当前流程图</h1>
+        <p>对应当前仓库代码：<code>geo_pipeline/pipeline.py</code>、<code>evaluate.py</code>、<code>modules/sl.py</code>、<code>modules/dst.py</code>、<code>modules/pomdp.py</code> 和 <code>wait_and_run.sh</code>。</p>
+        <p>一句话版：每张图按 <code>country → city → street</code> 粗到细推理；每层先让 MLLM 生成候选，再用 POMDP 选检查任务、Verify 取证、SL 给证据打分、Bayes 更新 posterior，最后由评估脚本 geocode 成坐标并算距离阈值准确率。</p>
+        <div class="pill-row">
+          <span class="pill"><span class="dot" style="background:#7aa2d6"></span>Country posterior 是主控</span>
+          <span class="pill"><span class="dot" style="background:#6fb884"></span>City/Street 受 top candidates 约束</span>
+          <span class="pill"><span class="dot" style="background:#c58b3a"></span>v8 修复 child-country 冲突</span>
+          <span class="pill"><span class="dot" style="background:#7f6dd6"></span>分析重点是 continent false positives</span>
+        </div>
+      </div>
+      <div class="node risk">
+        <h3>当前实验背景</h3>
+        <p>v6b 的主要问题是北美假阳性：很多欧洲/亚洲图被判成美国/加拿大。v7 把北美假阳性从 825 降到 120，但引入了 51.84% 的 country-child conflict。v8 的目标是保留反北美偏置，同时阻止 city/street 随便推翻 country。</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>1. 全局主流程</h2>
+    <div class="flow">
+      <div class="node ops arrow">
+        <h3>YFCC4K Batch</h3>
+        <p><code>evaluate.py</code> 从 <code>YFCC4KDataset</code> 读取图片和 GT 经纬度，按 <code>batch_size</code> 送入 pipeline。</p>
+      </div>
+      <div class="node country arrow">
+        <h3>Country Level</h3>
+        <p>生成国家候选，形成 <code>country_posterior</code>。v8 要至少做一次验证，不能 step=0 因初始概率略高就下钻。</p>
+      </div>
+      <div class="node city arrow">
+        <h3>City Level</h3>
+        <p>上下文带 top-3 国家候选，要求城市在这些候选国家内细化，除非图中直接出现别国线索。</p>
+      </div>
+      <div class="node street arrow">
+        <h3>Street Level</h3>
+        <p>上下文带 top 国家和 top 城市，输出街道、区、地标。v8 不鼓励附加候选外国家。</p>
+      </div>
+      <div class="node eval arrow">
+        <h3>Geocode</h3>
+        <p>优先 street/city 带 country 查询；如果 child 自带国家和 parent 冲突，跳过该 child，回退到更稳的层级。</p>
+      </div>
+      <div class="node eval">
+        <h3>Metrics</h3>
+        <p>用 Haversine 距离算 <code>1/25/200/750/2500 km</code> 准确率，并保存 records 供诊断。</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>2. 单个层级内部：Hypothesize → Verify → Update</h2>
+    <div class="loop-box">
+      <div class="flow.five flow">
+        <div class="node arrow">
+          <h3>Hypothesize</h3>
+          <p>MLLM 看图生成 JSON：<code>hypotheses</code> 和 <code>verification_plan</code>。</p>
+          <small>位置：<code>_hypothesize_prompt</code></small>
+        </div>
+        <div class="node arrow">
+          <h3>Parse & Normalize</h3>
+          <p>解析普通 JSON、Markdown fenced JSON、以及 <code>{general, cue_responses}</code> wrapper。</p>
+          <small>位置：<code>_parse_hypothesis_payload</code></small>
+        </div>
+        <div class="node arrow">
+          <h3>Prior</h3>
+          <p>国家层做 country canonicalization，再用 temperature softmax 得到初始 prior。</p>
+          <small>位置：<code>_softmax_prior</code></small>
+        </div>
+        <div class="node arrow">
+          <h3>POMDP Loop</h3>
+          <p>只要没满足停止条件，就选任务、取证、打分、更新 posterior。</p>
+          <small>位置：<code>_run_level</code></small>
+        </div>
+        <div class="node">
+          <h3>MAP Output</h3>
+          <p>每层取 posterior 最大的 location，写入 <code>country/city/street</code>。</p>
+          <small>MAP = maximum a posteriori</small>
+        </div>
+      </div>
+    </div>
+    <div class="note">
+      现在代码不是论文里的 WebSearch/ImageSearch 版本。所有证据都来自同一个 MLLM 对图片的再次观察和解释，所以多循环可能增强正确线索，也可能重复放大偏见。后续 v9 更适合加 margin stop、replace/backtrack，而不是盲目增加循环次数。
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>3. POMDP + SL + Bayes 更新细节</h2>
+    <p>这一节对应 <code>GeoPipeline._run_level()</code> 和 <code>GeoPipeline.predict_batch()</code> 里的核心循环。每个层级 country/city/street 都走同一套逻辑：当前 posterior 决定下一步检查什么，检查结果再反过来更新 posterior。</p>
+    <div class="flow.four flow">
+      <div class="node ops arrow">
+        <h3>POMDP Select</h3>
+        <p>给当前 belief 和 pending tasks，让 MLLM 选最能减少不确定性的检查任务。</p>
+        <small>代码：<code>POMDPModule.select_action</code> / batch 中调用 <code>_make_policy_prompt</code></small>
+      </div>
+      <div class="node ops arrow">
+        <h3>Verify</h3>
+        <p>MLLM 按任务看图，输出一段 observation，例如文字、建筑、道路、植被如何支持/反驳候选。</p>
+        <small>代码：<code>_verify_prompt</code> + <code>mllm.batch_generate</code></small>
+      </div>
+      <div class="node ops arrow">
+        <h3>SL Score</h3>
+        <p>对每个 hypothesis 采样 <code>SL_N_SAMPLES=5</code> 次，解析 <code>Support Rating</code> 和 <code>Confidence</code>。</p>
+        <small>代码：<code>SLModule.score_many</code></small>
+      </div>
+      <div class="node ops">
+        <h3>Bayes / DST</h3>
+        <p>默认用 GeoBayes Eq.7 乘法更新；证据高度冲突时用 Yager DST fallback。</p>
+        <small>代码：<code>DSTModule.fuse</code></small>
+      </div>
+    </div>
+    <div class="two-col" style="margin-top:12px">
+      <div class="node">
+        <h3>单图版代码骨架</h3>
+        <pre><code>posterior = dict(initial_posterior)
+pending = list(initial_plan)
+evidence_scores_all = []
+
+while True:
+    exhausted = len(pending) == 0
+    if self.pomdp.should_stop(posterior, step, level, exhausted):
+        break
+
+    task_idx = self.pomdp.select_action(posterior, pending, level, step)
+    task = pending.pop(task_idx)
+
+    evidence_desc = self.mllm.generate(_verify_prompt(...))
+    w_scores = self.sl.score(evidence_desc, hyps, level)
+    evidence_scores_all.append(w_scores)
+    posterior = self.dst.fuse(initial_posterior, evidence_scores_all)</code></pre>
+      </div>
+      <div class="node">
+        <h3>Batch 版代码骨架</h3>
+        <pre><code>active = [i for i in range(n)
+          if not should_stop(posteriors[i], steps[i], ...)]
+
+policy_resps = self.mllm.batch_generate(policy_msgs)
+verify_resps = self.mllm.batch_generate(verify_msgs)
+
+sl_items = [(evidence_descs[i], list(posteriors[i].keys()))
+            for i in active]
+sl_results = self.sl.score_many(sl_items, level)
+
+for k, i in enumerate(active):
+    ev_scores_all[i].append(sl_results[k])
+    posteriors[i] = self.dst.fuse(priors[i], ev_scores_all[i])</code></pre>
+      </div>
+    </div>
+    <div class="table">
+      <div>Stop condition</div><div><code>POMDPModule.should_stop()</code>：达到最大步数、任务耗尽、或 country/city 已至少验证一次且 <code>max_prob &gt;= TRANSITION_THR</code> 时停止。street 层不会因 transition threshold 提前停，只看任务耗尽/步数。</div>
+      <div>Action selection</div><div>如果只剩一个 task，直接选它；多个 task 时调用 policy prompt。解析失败就默认 task 0，保证流程不断。</div>
+      <div>Evidence memory</div><div>每条 evidence 的 <code>w_scores</code> 都加入 <code>evidence_scores_all</code>，posterior 每次从初始 prior 和所有累计证据重新融合，而不是只基于上一步增量。</div>
+      <div>Posterior</div><div>对候选地点的当前概率分布，例如 <code>united states:0.51, canada:0.49</code>。</div>
+      <div>SL weight</div><div><code>W(e|l)=exp(alpha * beta * (c-3) * uncertainty_factor)</code>。大于 1 支持，小于 1 反驳，接近 1 中性。</div>
+      <div>DST fallback</div><div>当不同证据强烈支持不同候选时，把冲突质量部分转成 ignorance，避免乘法更新过度自信。</div>
+      <div>Key evidence</div><div>如果某条证据的最大权重 <code>max_w &gt; 1.5</code>，会截取前 120 字放入下层 context。</div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>4. 当前实际给 LLM 的 Prompt 模板</h2>
+    <p>下面是代码里的核心 prompt 结构，省略了真实图片对象，只保留发给模型的文字。它们分别对应：生成候选、验证证据、选择下一步、给证据打分。</p>
+    <div class="two-col">
+      <div class="node country">
+        <h3>Hypothesize Prompt</h3>
+        <p>用途：让模型先提出候选地点和检查计划。</p>
+        <small>定义：<code>_hypothesize_prompt(image, level, context)</code>；调用：<code>_hypothesize()</code> 和 <code>predict_batch()</code> 的 <code>hyp_messages</code>。</small>
+        <pre><code>You are a geolocation expert. {level_hint}
+Return 3-5 plausible hypotheses when the image is ambiguous.
+For country-level reasoning, return country names only, not continents or regions.
+Do not default to United States or Canada from English text, generic roads,
+vegetation, architecture, online media, or product branding alone; assign high
+confidence only when there are explicit local clues.
+Prior context: {context}
+
+Analyze this image and respond with valid JSON only, no markdown fences:
+{
+  "hypotheses": [{"location": "&lt;name&gt;", "confidence": &lt;0-1&gt;}, ...],
+  "verification_plan": [{"desc": "&lt;what to check&gt;", "bbox": [x,y,w,h] or null}, ...]
+}</code></pre>
+      </div>
+      <div class="node city">
+        <h3>City Context</h3>
+        <p>用途：country 之后进入 city 时，避免只传一个错误父节点。</p>
+        <small>定义：<code>_context_for_level("city", result, key_evidence)</code>；输入：<code>country_posterior</code> top-3。</small>
+        <pre><code>Country candidates: {top countries}.
+Hypothesize cities within these candidate countries.
+Do not introduce a city from a different country unless visible text
+or a landmark directly names it.
+If the country remains ambiguous, keep alternatives within the listed candidates.
+Key clues: {recent high-weight evidence}</code></pre>
+      </div>
+      <div class="node street">
+        <h3>Street Context</h3>
+        <p>用途：street 层在 top country/city 内细化，修复 v7 child-country conflict。</p>
+        <small>定义：<code>_context_for_level("street", result, key_evidence)</code>；输入：<code>country_posterior</code> 和 <code>city_posterior</code> top-3。</small>
+        <pre><code>Country candidates: {top countries}. City candidates: {top cities}.
+Refine within these city/country candidates.
+Return a street, district, or landmark;
+do not append a different country unless directly visible in the image.
+Key clues: {recent high-weight evidence}</code></pre>
+      </div>
+      <div class="node ops">
+        <h3>Verify Prompt</h3>
+        <p>用途：针对一个检查任务重新看图，产出 observation。</p>
+        <small>定义：<code>_verify_prompt(image, task, hypotheses, level)</code>；调用：POMDP loop 选出 task 后。</small>
+        <pre><code>Task: {task desc}. Focus on region [x,y,w,h]={bbox}.
+Current hypotheses: {top hypotheses}
+Reasoning level: {country/city/street}
+
+Describe what you observe and how it relates to the hypotheses.
+Respond with: &lt;observation text&gt;</code></pre>
+      </div>
+      <div class="node ops">
+        <h3>POMDP Policy Prompt</h3>
+        <p>用途：如果还有多个 pending tasks，让模型选最有信息量的一项。</p>
+        <small>定义：<code>POMDPModule._make_policy_prompt(...)</code>；返回 JSON 里的 <code>task_index</code>。</small>
+        <pre><code>You are a geolocation agent at reasoning level: {level} (step {step}).
+
+Current belief over locations:
+  {location: probability, ...}
+
+Pending verification tasks:
+  [0] desc: ..., region: ...
+  [1] desc: ..., region: ...
+
+Select the single task that would most reduce uncertainty -- i.e.,
+the task most likely to produce evidence that strongly supports or
+contradicts the current top hypotheses.
+
+Respond with JSON only: {"task_index": &lt;int&gt;, "reason": "&lt;short reason&gt;"}</code></pre>
+      </div>
+      <div class="node ops">
+        <h3>SL Scoring Prompt</h3>
+        <p>用途：把一条 evidence 转成对每个 hypothesis 的支持强度。</p>
+        <small>定义：<code>SLModule._make_prompt(evidence_desc, hypothesis, level)</code>；每个 evidence × hypothesis 都会打一遍分。</small>
+        <pre><code>You are evaluating geographic evidence for the location hypothesis: '{hypothesis}'.
+Current reasoning level: {level}.
+
+Evidence: {evidence description}
+
+Rate how strongly this evidence supports the hypothesis.
+Respond with:
+  Support Rating: &lt;1-5&gt;  (1=strong contradiction, 3=neutral, 5=strong support)
+  Confidence: &lt;0.0-1.0&gt;  (your confidence in this rating)
+  Reasoning: &lt;one sentence&gt;</code></pre>
+      </div>
+    </div>
+    <div class="note">
+      设计重点：Hypothesize 负责“提出候选”，Verify 负责“看图取证”，SL scoring 负责“把文字证据量化”。不要让同一个 prompt 同时做完所有事，否则模型很容易确认偏误：先猜美国，然后后面的解释都围绕美国展开。
+    </div>
+    <div class="table">
+      <div>Prompt 进入模型的位置</div><div><code>MLLMClient.batch_generate()</code> 负责普通生成；<code>SLModule.score_many()</code> 内部用 <code>batch_sample_n()</code> 做 5 次采样。</div>
+      <div>为什么要求 JSON</div><div>Hypothesize 和 policy 输出需要被代码解析。<code>_try_parse_json()</code> 支持纯 JSON、Markdown fenced JSON；<code>_parse_hypothesis_payload()</code> 还支持 wrapper 里的 <code>general</code> 和 <code>cue_responses</code>。</div>
+      <div>为什么 prompt 里反复限制美国/加拿大</div><div>v6b 诊断显示主要粗粒度错误是 North America false positives，尤其把欧洲图预测成美国。这个约束是为了降低英语/普通道路/品牌带来的默认美国偏置。</div>
+      <div>为什么 city/street 不让随便换国家</div><div>v7 证明 child 层过度自由会导致 <code>Country-child conflict rate</code> 暴涨到 51.84%。v8 让 child 层优先在 parent top candidates 内细化。</div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>5. 概率论设计：为什么要这样更新</h2>
+    <div class="flow.four flow">
+      <div class="node arrow">
+        <h3>1. 先有候选集合</h3>
+        <p>地理定位不是直接回归经纬度，而是在候选地点集合上做分类式推理：<code>L = {l1, l2, ...}</code>。</p>
+      </div>
+      <div class="node arrow">
+        <h3>2. Prior 表示初始相信程度</h3>
+        <p>MLLM 初始 confidence 不直接当真，而是经过 softmax 变成总和为 1 的概率。</p>
+      </div>
+      <div class="node arrow">
+        <h3>3. Evidence 变成 likelihood</h3>
+        <p>每条观察证据 <code>e</code> 对每个地点 <code>l</code> 都产生一个权重 <code>W(e|l)</code>。</p>
+      </div>
+      <div class="node">
+        <h3>4. Bayesian update</h3>
+        <p>用 <code>posterior ∝ prior × likelihood</code>。支持某候选的证据会放大它，反驳证据会压低它。</p>
+      </div>
+    </div>
+    <div class="table">
+      <div>Softmax prior</div><div><code>P0(l_i)=exp(score_i/T)/sum_j exp(score_j/T)</code>。这样所有候选概率加起来等于 1。<code>T=1.5</code> 让分布别太尖，保留第二第三候选，减少早期过度自信。</div>
+      <div>Score cutoff</div><div><code>PRIOR_CUTOFF=0.6</code> 会截断过高 confidence，避免模型一上来给 0.9 就锁死。这个是防 confirmation bias 的一部分。</div>
+      <div>SL likelihood</div><div><code>W(e|l)=exp(alpha * beta * (c-3) * uncertainty_factor)</code>。<code>c=3</code> 中性，<code>c&gt;3</code> 支持，<code>c&lt;3</code> 反驳。</div>
+      <div>为什么用 exp</div><div>因为多个独立证据在 Bayes 里是 likelihood 相乘。把评分映射成指数权重后，支持/反驳可以平滑累积，而且始终为正。</div>
+      <div>Confidence alpha</div><div><code>alpha</code> 是模型对自己评分的置信度。低 confidence 的证据影响小，高 confidence 的证据影响大。</div>
+      <div>Uncertainty shrink</div><div>同一 evidence 会采样 5 次。如果评分波动大，说明模型不稳定，<code>uncertainty_factor</code> 会把权重拉回 1，减少噪声证据影响。</div>
+      <div>Bayes update</div><div><code>P_t(l) ∝ P_0(l) * Π_t W(e_t|l)</code>。代码用 log 累加再 softmax，避免很多权重相乘造成数值下溢。</div>
+      <div>DST fallback</div><div>如果多条证据互相强烈冲突，普通乘法可能错误地变得很自信。Yager DST fallback 把一部分冲突质量放到 ignorance，相当于“我不知道”，降低过度自信。</div>
+    </div>
+    <div class="note warn-note">
+      直观例子：如果候选是 France 和 United States，证据是“蓝白红旗和法语路牌”。SL 可能给 France <code>c=5</code>，United States <code>c=2</code>。Bayes 更新后 France posterior 上升，United States 下降。反过来，如果证据只是“英文广告牌”，prompt 会要求不要直接默认美国，因为英语是弱证据，不该给过强 likelihood。
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>6. 层级传递：v8 怎么避免 city/street 带偏</h2>
+    <div class="flow.five flow">
+      <div class="node country arrow">
+        <h3>Country Posterior</h3>
+        <p>保留完整国家概率分布，不只看 argmax。</p>
+      </div>
+      <div class="node city arrow">
+        <h3>City Context</h3>
+        <p>传入 top-3 国家：<code>Country candidates: A, B, C</code>。</p>
+      </div>
+      <div class="node city arrow">
+        <h3>City Constraint</h3>
+        <p>要求城市在候选国家内生成；除非图中直接出现其他国家的文字/地标。</p>
+      </div>
+      <div class="node street arrow">
+        <h3>Street Context</h3>
+        <p>传入 top 国家 + top 城市，要求在这些候选内细化。</p>
+      </div>
+      <div class="node street">
+        <h3>Conflict Reduced</h3>
+        <p>目标是把 v7 的 51.84% country-child conflict 拉回 v6b 附近。</p>
+      </div>
+    </div>
+    <div class="note warn-note">
+      关键教训：v7 允许 city/street 用 embedded country 覆盖 parent country，虽然北美假阳性降了，但大量 child 输出和 parent 冲突，整体精度下降。v8 改成“冲突 child 不覆盖、不混查，直接跳过该 child geocode”。
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>7. 评估端 Geocode 决策树</h2>
+    <div class="flow.five flow">
+      <div class="node eval arrow">
+        <h3>Salvage Country</h3>
+        <p>如果 <code>pred_country</code> 不是有效国家，尝试从 city/street 字符串里提取国家。</p>
+      </div>
+      <div class="node eval arrow">
+        <h3>Try Street</h3>
+        <p>如果 street 存在，用 parent country 限定查询；若 child 自带冲突国家，跳过 street。</p>
+      </div>
+      <div class="node eval arrow">
+        <h3>Try City</h3>
+        <p>street 失败后尝试 city，同样先检查 child-country conflict。</p>
+      </div>
+      <div class="node eval arrow">
+        <h3>Try Country</h3>
+        <p>城市/街道失败后，至少用国家中心附近的 geocode 结果算粗粒度距离。</p>
+      </div>
+      <div class="node eval">
+        <h3>Continent Fallback</h3>
+        <p>全部 geocode 失败时，用 country posterior top-3 投票出 continent centroid。</p>
+      </div>
+    </div>
+    <div class="table">
+      <div><code>street_country_qualified</code></div><div>街道名没有国家，评估端拼成 <code>street, country</code> 后查到坐标。</div>
+      <div><code>street_bare</code></div><div>带国家查询失败，裸 street 查到了。这个来源有歧义风险。</div>
+      <div><code>child_country_conflict</code></div><div>v8 新逻辑：child 自带国家和 parent country 不一致，跳过该 child，不让它覆盖 parent。</div>
+      <div><code>continent_fallback</code></div><div>最后兜底，只希望救 <code>&lt;2500 km</code> 大洲级指标。</div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>8. v6b → v7 → v8 实验脉络</h2>
+    <div class="timeline">
+      <div class="node bad">
+        <h3>v6b 问题</h3>
+        <p>总体 <code>Continent&lt;2500km = 62.74%</code>。主要错误是北美假阳性：<code>n=825</code>，其中欧洲被错判北美 <code>575</code>。</p>
+        <ul>
+          <li>geocode missing 只有 4，不是主因</li>
+          <li>country-child conflict 只有 3.57%</li>
+          <li>模型倾向默认美国/加拿大</li>
+        </ul>
+      </div>
+      <div class="node risk">
+        <h3>v7 过修正</h3>
+        <p>北美假阳性降到 <code>120</code>，但总体掉到 <code>56.71%</code>。</p>
+        <ul>
+          <li>country-child conflict 升到 51.84%</li>
+          <li>child_country_override 多达 1877</li>
+          <li>city/street 开始大量推翻 country</li>
+        </ul>
+      </div>
+      <div class="node ok">
+        <h3>v8 当前目标</h3>
+        <p>保留反北美偏置和 wrapper 解析，同时约束 child 层不要随便换国家。</p>
+        <ul>
+          <li>冲突 child 不再覆盖 parent</li>
+          <li>city/street 在 top candidates 内细化</li>
+          <li>下一步看 conflict 是否回落</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>9. 关键术语备注</h2>
+    <div class="glossary">
+      <div class="term">
+        <h3>Hypothesize</h3>
+        <p>“提出假设”。MLLM 先看整张图，列出可能地点和置信度，并给出接下来要检查的线索计划。</p>
+        <div class="where">代码：<code>_hypothesize_prompt</code> / <code>_hypothesize</code></div>
+      </div>
+      <div class="term">
+        <h3>Verify</h3>
+        <p>“验证线索”。按 verification task 再看图，例如检查文字、路牌、建筑、植被等，并输出 observation。</p>
+        <div class="where">代码：<code>_verify_prompt</code></div>
+      </div>
+      <div class="term">
+        <h3>Update</h3>
+        <p>“更新概率”。把 Verify 得到的证据转成每个候选的支持权重，然后更新 posterior。</p>
+        <div class="where">代码：<code>DSTModule.fuse</code></div>
+      </div>
+      <div class="term">
+        <h3>Hypothesis</h3>
+        <p>候选地点。country 层是国家名；city/street 层是城市、街区、地标或街道。</p>
+        <div class="where">例：<code>Canada</code>、<code>Toronto</code>、<code>Dundas West</code></div>
+      </div>
+      <div class="term">
+        <h3>Prior</h3>
+        <p>还没有验证证据前的初始概率。当前由 MLLM confidence 经过 temperature softmax 得到。</p>
+        <div class="where">代码：<code>_softmax_prior</code></div>
+      </div>
+      <div class="term">
+        <h3>Posterior</h3>
+        <p>融合证据后的概率分布。最终输出取 posterior 最大的 MAP 候选。</p>
+        <div class="where">例：<code>France:0.62, Spain:0.24</code></div>
+      </div>
+      <div class="term">
+        <h3>Softmax</h3>
+        <p>把一组分数转成总和为 1 的概率分布。temperature 越高，分布越平；越低，top 候选越尖锐。</p>
+        <div class="where">当前：<code>PRIOR_TEMP=1.5</code></div>
+      </div>
+      <div class="term">
+        <h3>POMDP</h3>
+        <p>这里不是训练 RL，而是让 MLLM 根据当前 belief 选择最值得检查的下一条 verification task。</p>
+        <div class="where">代码：<code>POMDPModule.select_action</code></div>
+      </div>
+      <div class="term">
+        <h3>SL</h3>
+        <p>Single-source likelihood。对一条证据分别评价它支持每个 hypothesis 的程度和置信度。</p>
+        <div class="where">代码：<code>SLModule.score_many</code></div>
+      </div>
+      <div class="term">
+        <h3>DST</h3>
+        <p>Dempster-Shafer Theory。当前只作为高冲突 fallback；主路径仍是 GeoBayes 的乘法 Bayesian update。</p>
+        <div class="where">代码：<code>DSTModule.fuse</code></div>
+      </div>
+      <div class="term">
+        <h3>MAP</h3>
+        <p>Maximum a posteriori。选择 posterior 最大的候选作为该层输出。</p>
+        <div class="where">代码：<code>best = max(posterior, key=posterior.get)</code></div>
+      </div>
+      <div class="term">
+        <h3>Transition Threshold</h3>
+        <p>粗层到细层的停止/转移阈值。当前 <code>TRANSITION_THR=0.55</code>，但 country/city 至少验证一次。</p>
+        <div class="where">代码：<code>POMDPModule.should_stop</code></div>
+      </div>
+      <div class="term">
+        <h3>Geocode</h3>
+        <p>把地名文本转成经纬度坐标。例如把 <code>Paris, France</code> 查成 <code>(48.8566, 2.3522)</code>。</p>
+        <div class="where">代码：<code>evaluate.geocode</code></div>
+      </div>
+      <div class="term">
+        <h3>Haversine</h3>
+        <p>计算地球球面上两组经纬度之间的大圆距离。评估里的 1/25/200/750/2500 km 都基于它。</p>
+        <div class="where">代码：<code>evaluate.haversine</code></div>
+      </div>
+      <div class="term">
+        <h3>Canonicalization</h3>
+        <p>地名归一化。比如 <code>USA</code>、<code>California, USA</code>、<code>United States</code> 都统一成 <code>united states</code>。</p>
+        <div class="where">代码：<code>canonicalize_country</code></div>
+      </div>
+      <div class="term">
+        <h3>Country-child Conflict</h3>
+        <p>预测国家和 city/street 字符串里自带国家不一致。v7 的主要回归就是这个指标暴涨。</p>
+        <div class="where">例：parent=<code>united states</code>，child=<code>London, United Kingdom</code></div>
+      </div>
+      <div class="term">
+        <h3>Geocode Source</h3>
+        <p>评估端记录坐标来自 street、city、country、continent fallback，便于判断问题是预测还是地名解析。</p>
+        <div class="where">例：<code>street_country_qualified</code></div>
+      </div>
+      <div class="term">
+        <h3>North America FP</h3>
+        <p>预测北美但 GT 不在北美。v6b 最大错误来源，尤其是把欧洲图预测成 United States。</p>
+        <div class="where">FP = false positive，假阳性</div>
+      </div>
+      <div class="term">
+        <h3>Continent Fallback</h3>
+        <p>当所有 geocode 都失败时，用 country posterior 聚合到大洲质心，尽量保住 2500km 指标。</p>
+        <div class="where">代码：<code>_continent_fallback_coords</code></div>
+      </div>
+      <div class="term">
+        <h3>Entropy</h3>
+        <p>概率分布的不确定性。候选越平均，entropy 越高；top 候选越明显，entropy 越低。后续 v9 可用它控制是否继续验证。</p>
+        <div class="where">当前代码还没显式使用</div>
+      </div>
+      <div class="term">
+        <h3>Margin</h3>
+        <p>top1 posterior 减 top2 posterior。margin 小表示模型还在犹豫，适合继续验证或 replace 候选。</p>
+        <div class="where">例：<code>0.52 - 0.48 = 0.04</code></div>
+      </div>
+      <div class="term">
+        <h3>Replace / Backtrack</h3>
+        <p>GeoBayes 论文里的兜底机制。Replace 是候选不够好时重生成候选；Backtrack 是细层冲突时回到粗层重评。</p>
+        <div class="where">当前计划给 v9 加</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>10. 你下一次看结果时的检查顺序</h2>
+    <div class="flow.four flow">
+      <div class="node arrow">
+        <h3>先看 Conflict</h3>
+        <p><code>Country-child conflict rate</code> 是否从 v7 的 51.84% 明显下降。</p>
+      </div>
+      <div class="node arrow">
+        <h3>再看 NA FP</h3>
+        <p><code>North America false positives</code> 是否仍显著低于 v6b 的 825。</p>
+      </div>
+      <div class="node arrow">
+        <h3>看 Accuracy</h3>
+        <p><code>Continent&lt;2500km</code> 和 <code>Country&lt;750km</code> 是否从 v7 回升。</p>
+      </div>
+      <div class="node">
+        <h3>看 Geocode</h3>
+        <p>确认 <code>missing</code> 不高，且 <code>child_country_conflict</code> 不再主导。</p>
+      </div>
+    </div>
+    <pre><code>cd ~/Multi-agent-MLLM-geolocation
+python3 geo_pipeline/analyze_results.py --pred geo_pipeline/results/v8_limit300.json</code></pre>
+  </section>
+</main>
+</body>
+</html>
