@@ -45,6 +45,11 @@ WEB_SEARCH_MARGIN_THR = ENHANCE_THR
 WEB_SEARCH_MAX_RESULTS = 3
 WEB_SEARCH_TIMEOUT = 8
 WEB_SEARCH_REQUIRE_ENTITY = True
+WEB_SEARCH_LEVELS = tuple(
+    level.strip()
+    for level in os.environ.get("WEB_SEARCH_LEVELS", "country,city,street").split(",")
+    if level.strip()
+)
 
 # ── SL (single-source uncertainty) ────────────────────────────────────────────
 SL_N_SAMPLES    = 5      # samples per hypothesis for uncertainty estimation in SLModule

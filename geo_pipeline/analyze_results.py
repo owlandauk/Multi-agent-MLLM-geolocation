@@ -148,6 +148,8 @@ def analyze(records: list[dict]) -> dict:
     conflicts = [r for r in records if _country_conflicts(r)]
     country_replaced = sum(1 for r in records if r.get("country_replaced"))
     country_web_enhanced = sum(1 for r in records if r.get("country_web_enhanced"))
+    city_web_enhanced = sum(1 for r in records if r.get("city_web_enhanced"))
+    street_web_enhanced = sum(1 for r in records if r.get("street_web_enhanced"))
     visual_deltas = [
         float(r["country_visual_delta"]) for r in records
         if r.get("country_visual_delta") is not None
@@ -155,6 +157,14 @@ def analyze(records: list[dict]) -> dict:
     web_deltas = [
         float(r["country_web_delta"]) for r in records
         if r.get("country_web_delta") is not None
+    ]
+    city_web_deltas = [
+        float(r["city_web_delta"]) for r in records
+        if r.get("city_web_delta") is not None
+    ]
+    street_web_deltas = [
+        float(r["street_web_delta"]) for r in records
+        if r.get("street_web_delta") is not None
     ]
     country_stable_known = [r for r in records if r.get("country_stable") is not None]
     country_stable = sum(1 for r in country_stable_known if r.get("country_stable"))
@@ -235,6 +245,13 @@ def analyze(records: list[dict]) -> dict:
         "country_child_conflict_rate": round(100.0 * len(conflicts) / total, 2) if total else 0.0,
         "country_replaced_rate": round(100.0 * country_replaced / total, 2) if total else 0.0,
         "country_web_enhanced_rate": round(100.0 * country_web_enhanced / total, 2) if total else 0.0,
+        "city_web_enhanced_rate": round(100.0 * city_web_enhanced / total, 2) if total else 0.0,
+        "street_web_enhanced_rate": round(100.0 * street_web_enhanced / total, 2) if total else 0.0,
+        "web_enhanced_rate": {
+            "country": round(100.0 * country_web_enhanced / total, 2) if total else 0.0,
+            "city": round(100.0 * city_web_enhanced / total, 2) if total else 0.0,
+            "street": round(100.0 * street_web_enhanced / total, 2) if total else 0.0,
+        },
         "country_visual_delta": {
             "mean": round(mean(visual_deltas), 4) if visual_deltas else None,
             "median": round(median(visual_deltas), 4) if visual_deltas else None,
@@ -242,6 +259,14 @@ def analyze(records: list[dict]) -> dict:
         "country_web_delta": {
             "mean": round(mean(web_deltas), 4) if web_deltas else None,
             "median": round(median(web_deltas), 4) if web_deltas else None,
+        },
+        "city_web_delta": {
+            "mean": round(mean(city_web_deltas), 4) if city_web_deltas else None,
+            "median": round(median(city_web_deltas), 4) if city_web_deltas else None,
+        },
+        "street_web_delta": {
+            "mean": round(mean(street_web_deltas), 4) if street_web_deltas else None,
+            "median": round(median(street_web_deltas), 4) if street_web_deltas else None,
         },
         "country_stable_rate": (
             round(100.0 * country_stable / len(country_stable_known), 2)
@@ -270,6 +295,8 @@ def analyze(records: list[dict]) -> dict:
             "country_stable": _bucket_accuracy(records, lambda r: r.get("country_stable")),
             "geocode_source": _bucket_accuracy(records, lambda r: r.get("geocode_source") or "missing"),
             "country_web_enhanced": _bucket_accuracy(records, lambda r: bool(r.get("country_web_enhanced"))),
+            "city_web_enhanced": _bucket_accuracy(records, lambda r: bool(r.get("city_web_enhanced"))),
+            "street_web_enhanced": _bucket_accuracy(records, lambda r: bool(r.get("street_web_enhanced"))),
             "country_replaced": _bucket_accuracy(records, lambda r: bool(r.get("country_replaced"))),
             "country_descent_blocked_reason": _bucket_accuracy(
                 records,
@@ -337,7 +364,16 @@ def _print_report(report: dict) -> None:
         )
     print(f"Country-child conflict rate: {report['country_child_conflict_rate']:.2f}%")
     print(f"Country replace rate: {report['country_replaced_rate']:.2f}%")
-    print(f"Country web enhance rate: {report['country_web_enhanced_rate']:.2f}%")
+    web_rates = report.get("web_enhanced_rate") or {
+        "country": report.get("country_web_enhanced_rate", 0.0),
+        "city": report.get("city_web_enhanced_rate", 0.0),
+        "street": report.get("street_web_enhanced_rate", 0.0),
+    }
+    print(
+        "Web enhance rate: "
+        f"country={web_rates['country']:.2f}% "
+        f"city={web_rates['city']:.2f}% street={web_rates['street']:.2f}%"
+    )
     visual_delta = report.get("country_visual_delta", {})
     if visual_delta.get("mean") is not None:
         print(
@@ -349,6 +385,18 @@ def _print_report(report: dict) -> None:
         print(
             "Country web delta: "
             f"mean={web_delta['mean']} median={web_delta['median']}"
+        )
+    city_web_delta = report.get("city_web_delta", {})
+    if city_web_delta.get("mean") is not None:
+        print(
+            "City web delta: "
+            f"mean={city_web_delta['mean']} median={city_web_delta['median']}"
+        )
+    street_web_delta = report.get("street_web_delta", {})
+    if street_web_delta.get("mean") is not None:
+        print(
+            "Street web delta: "
+            f"mean={street_web_delta['mean']} median={street_web_delta['median']}"
         )
     if report.get("continent_stable_rate") is not None:
         print(f"Continent stable rate: {report['continent_stable_rate']:.2f}%")
@@ -413,6 +461,9 @@ def _print_report(report: dict) -> None:
             "continent_top_mass",
             "country_continent_regularized",
             "geocode_source",
+            "country_web_enhanced",
+            "city_web_enhanced",
+            "street_web_enhanced",
             "country_descent_blocked_reason",
         ):
             bucket = buckets.get(bucket_name, {})

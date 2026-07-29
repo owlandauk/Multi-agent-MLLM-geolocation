@@ -78,6 +78,22 @@ Resume from a checkpoint:
 python geo_pipeline/evaluate.py --start 1000 --out results/run2.json
 ```
 
+### Optional GeoBayes-style web search
+
+Web evidence enhancement is disabled by default so offline CVHCI/HPC runs keep
+working. To enable Tavily text search when visual evidence stagnates:
+
+```bash
+export WEB_SEARCH_ENABLED=1
+export TAVILY_API_KEY=your_key
+# optional; defaults to country,city,street
+export WEB_SEARCH_LEVELS=country,city,street
+```
+
+The search trigger follows GeoBayes: it fires only when posterior gain is weak
+and the current level remains ambiguous, then reruns that level with the search
+snippets as supporting evidence.
+
 ## Configuration
 
 Key parameters in `config.py`:
@@ -86,9 +102,10 @@ Key parameters in `config.py`:
 |-----------|---------|-------------|
 | `SL_N_SAMPLES` | 5 | MLLM samples per evidence item for uncertainty estimation |
 | `POMDP_MAX_STEPS` | 8 | Max verification steps per hierarchy level |
-| `TRANSITION_THR` | 0.7 | Posterior threshold to advance to next level |
+| `TRANSITION_THR` | 0.55 | Posterior threshold to advance to next level |
 | `DST_CONFLICT_THR` | 0.5 | Conflict mass K above which Yager's rule is applied |
-| `MAX_SL_BATCH_SIZE` | 6 | Max hypotheses per GPU batch in SL (reduce if OOM) |
+| `MAX_SL_BATCH_SIZE` | 8 | Max hypotheses per GPU batch in SL (reduce if OOM) |
+| `WEB_SEARCH_LEVELS` | `country,city,street` | Hierarchy levels allowed to use opt-in web evidence |
 
 ## Evaluation
 
