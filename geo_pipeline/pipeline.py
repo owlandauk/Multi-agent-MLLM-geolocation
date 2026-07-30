@@ -6,7 +6,7 @@ Flow (one image):
   2. Per level (continent → country → city → street):
        a. SL: score each pending evidence against each hypothesis (uncertainty-aware)
        b. DST: fuse all evidence BBAs into updated posterior
-       c. POMDP: select next verification task (LLM policy)
+       c. POMDP: select next verification task (expected information gain or LLM policy)
        d. Repeat until POMDP stopping condition
        e. Continent posterior weakly regularizes country posterior; finer descent stays unconstrained
   3. Output MAP location → geocode → (lat, lon)
@@ -582,6 +582,10 @@ class GeoPipeline:
             # POMDP: select best action (skip if only one task)
             if len(pending) == 1:
                 task_idx = 0
+            elif self.pomdp.use_expected_gain_for(level):
+                task_idx = self.pomdp.select_action_by_expected_gain(
+                    image, posterior, pending, level, step
+                )
             else:
                 task_idx = self.pomdp.select_action(posterior, pending, level, step)
             task = pending.pop(task_idx)
@@ -659,7 +663,7 @@ class GeoPipeline:
         Full coarse-to-fine inference for one image.
         Returns {level: best_location_name, "posterior": final_posterior_dict}.
         """
-        result       = {}
+        result       = {"pomdp_policy": self.pomdp.policy_label}
         key_evidence = []
         context      = ""
 
@@ -775,25 +779,33 @@ class GeoPipeline:
             if not active:
                 break
 
-            policy_msgs = []
-            policy_idx = []
             task_choices = {}
-            for i in active:
-                if len(pending[i]) == 1:
-                    task_choices[i] = 0
-                else:
-                    policy_msgs.append(
-                        self.pomdp._make_policy_prompt(
-                            posteriors[i], pending[i], level, steps[i]
-                        )
-                    )
-                    policy_idx.append(i)
+            single_task = [i for i in active if len(pending[i]) == 1]
+            for i in single_task:
+                task_choices[i] = 0
 
-            if policy_msgs:
+            multi_task = [i for i in active if len(pending[i]) > 1]
+            if multi_task and self.pomdp.use_expected_gain_for(level):
+                eig_choices = self.pomdp.select_actions_by_expected_gain(
+                    [images[i] for i in multi_task],
+                    [posteriors[i] for i in multi_task],
+                    [pending[i] for i in multi_task],
+                    level,
+                    [steps[i] for i in multi_task],
+                )
+                for i, idx in zip(multi_task, eig_choices):
+                    task_choices[i] = min(idx, len(pending[i]) - 1)
+            elif multi_task:
+                policy_msgs = [
+                    self.pomdp._make_policy_prompt(
+                        posteriors[i], pending[i], level, steps[i]
+                    )
+                    for i in multi_task
+                ]
                 policy_resps = self.mllm.batch_generate(
                     policy_msgs, max_new_tokens=POMDP_MAX_NEW_TOKENS
                 )
-                for i, resp in zip(policy_idx, policy_resps):
+                for i, resp in zip(multi_task, policy_resps):
                     match = re.search(r'"?task_index"?\s*:\s*(\d+)', resp)
                     idx = int(match.group(1)) if match else 0
                     task_choices[i] = min(idx, len(pending[i]) - 1)
@@ -840,7 +852,7 @@ class GeoPipeline:
         """
         n = len(images)
         # per-image state
-        results = [{} for _ in range(n)]
+        results = [{"pomdp_policy": self.pomdp.policy_label} for _ in range(n)]
         key_evidence = [[] for _ in range(n)]
         contexts = [""] * n
         skip_finer = [False] * n

@@ -145,6 +145,7 @@ def analyze(records: list[dict]) -> dict:
     continent_masses = [m for r in records if (m := _continent_top_mass(r)) is not None]
     source_counts = Counter(r.get("geocode_source") or "missing" for r in records)
     consistency_counts = Counter(r.get("country_consistency") or "missing" for r in records)
+    policy_counts = Counter(r.get("pomdp_policy") or "missing" for r in records)
     conflicts = [r for r in records if _country_conflicts(r)]
     country_replaced = sum(1 for r in records if r.get("country_replaced"))
     country_web_enhanced = sum(1 for r in records if r.get("country_web_enhanced"))
@@ -229,6 +230,7 @@ def analyze(records: list[dict]) -> dict:
             for thr in EVAL_THRESHOLDS
         },
         "unknown_country_rate": round(100.0 * unknown / total, 2) if total else 0.0,
+        "pomdp_policy": dict(policy_counts),
         "country_top_mass": {
             "mean": round(mean(masses), 4) if masses else None,
             "median": round(median(masses), 4) if masses else None,
@@ -344,6 +346,10 @@ def analyze(records: list[dict]) -> dict:
 
 def _print_report(report: dict) -> None:
     print(f"Total records: {report['total']}")
+    if report.get("pomdp_policy"):
+        print("POMDP policy: " + ", ".join(
+            f"{key}={value}" for key, value in sorted(report["pomdp_policy"].items())
+        ))
     print("\nAccuracy")
     for thr in EVAL_THRESHOLDS:
         print(f"  {_THRESHOLD_LABELS[thr]:>18}: {report['accuracy'][str(thr)]:6.2f}%")

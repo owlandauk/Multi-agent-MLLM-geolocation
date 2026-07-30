@@ -221,6 +221,7 @@ def evaluate(args):
                 "pred_lat":     pred_coords[0] if pred_coords else None,
                 "pred_lon":     pred_coords[1] if pred_coords else None,
                 "dist_km":      dist_km,
+                "pomdp_policy": pred.get("pomdp_policy"),
                 "geocode_source": geocode_source,
                 "country_consistency": country_consistency,
                 "continent_posterior": {

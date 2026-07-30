@@ -61,6 +61,18 @@ DST_CONFLICT_THR = 0.5   # K > this → treat as high-conflict, apply cautious r
 # ── POMDP ─────────────────────────────────────────────────────────────────────
 POMDP_MAX_STEPS = 8      # full experiments
 POMDP_GAMMA     = 0.95   # discount factor (used if computing cumulative reward)
+POMDP_POLICY = os.environ.get("POMDP_POLICY", "eig").lower()
+POMDP_EIG_LEVELS = tuple(
+    level.strip()
+    for level in os.environ.get("POMDP_EIG_LEVELS", "continent,country,city,street").split(",")
+    if level.strip()
+)
+POMDP_TOP_HYPOTHESES = int(os.environ.get("POMDP_TOP_HYPOTHESES", "5"))
+POMDP_MAX_ACTIONS = int(os.environ.get("POMDP_MAX_ACTIONS", "6"))
+POMDP_OBS_SAMPLES = int(os.environ.get("POMDP_OBS_SAMPLES", "3"))
+POMDP_OBS_SMOOTHING = float(os.environ.get("POMDP_OBS_SMOOTHING", "0.25"))
+POMDP_ACTION_COST = float(os.environ.get("POMDP_ACTION_COST", "0.0"))
+POMDP_REWARD_MODE = os.environ.get("POMDP_REWARD_MODE", "entropy").lower()
 
 # ── Evaluation thresholds (km) ─────────────────────────────────────────────────
 EVAL_THRESHOLDS = [1, 25, 200, 750, 2500]
