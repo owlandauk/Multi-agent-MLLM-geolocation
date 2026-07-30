@@ -34,9 +34,12 @@ COUNTRY_REPLACE_ATTEMPTS = 0
 # The continent stage is a weak prior for country inference. It reduces obvious
 # cross-continent country defaults without hard-blocking North America or child
 # descent, avoiding the over-conservative v9 behavior.
-CONTINENT_REG_MIN_TOP = 0.45
-CONTINENT_REG_STRENGTH = 0.35
-CONTINENT_REG_FLOOR = 0.15
+ENABLE_CONTINENT_LEVEL = os.environ.get("ENABLE_CONTINENT_LEVEL", "1").lower() not in {
+    "0", "false", "no", "off"
+}
+CONTINENT_REG_MIN_TOP = float(os.environ.get("CONTINENT_REG_MIN_TOP", "0.45"))
+CONTINENT_REG_STRENGTH = float(os.environ.get("CONTINENT_REG_STRENGTH", "0.35"))
+CONTINENT_REG_FLOOR = float(os.environ.get("CONTINENT_REG_FLOOR", "0.15"))
 
 # Optional GeoBayes-style web evidence enhancement. Disabled by default because
 # HPC compute nodes may not have outbound network access and web search can be slow.

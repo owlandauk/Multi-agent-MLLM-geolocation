@@ -31,12 +31,15 @@ from config import (
     STRONG_POSTERIOR_THR, STABLE_MARGIN_THR, STABLE_ENTROPY_THR,
     GUARDED_DESCENT_THR, COUNTRY_REPLACE_TOP_THR,
     COUNTRY_REPLACE_MARGIN_THR, COUNTRY_REPLACE_ATTEMPTS,
+    ENABLE_CONTINENT_LEVEL,
     CONTINENT_REG_MIN_TOP, CONTINENT_REG_STRENGTH, CONTINENT_REG_FLOOR,
     WEB_SEARCH_TOP_THR, WEB_SEARCH_MARGIN_THR, WEB_SEARCH_REQUIRE_ENTITY,
     WEB_SEARCH_LEVELS,
 )
 
-LEVELS = ["continent", "country", "city", "street"]
+LEVELS = ["continent", "country", "city", "street"] if ENABLE_CONTINENT_LEVEL else [
+    "country", "city", "street"
+]
 
 _FENCED_JSON_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL | re.IGNORECASE)
 _SEARCH_ENTITY_RE = re.compile(
