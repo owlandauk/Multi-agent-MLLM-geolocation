@@ -34,7 +34,10 @@ COUNTRY_REPLACE_ATTEMPTS = 0
 # The continent stage is a weak prior for country inference. It reduces obvious
 # cross-continent country defaults without hard-blocking North America or child
 # descent, avoiding the over-conservative v9 behavior.
-ENABLE_CONTINENT_LEVEL = os.environ.get("ENABLE_CONTINENT_LEVEL", "1").lower() not in {
+# The standalone continent pass over-regularized country predictions on the
+# CVHCI/YFCC checks. Keep it available for ablations, but default to the
+# stronger v5-style country -> city -> street path.
+ENABLE_CONTINENT_LEVEL = os.environ.get("ENABLE_CONTINENT_LEVEL", "0").lower() not in {
     "0", "false", "no", "off"
 }
 CONTINENT_REG_MIN_TOP = float(os.environ.get("CONTINENT_REG_MIN_TOP", "0.45"))
@@ -64,7 +67,7 @@ DST_CONFLICT_THR = 0.5   # K > this → treat as high-conflict, apply cautious r
 # ── POMDP ─────────────────────────────────────────────────────────────────────
 POMDP_MAX_STEPS = 8      # full experiments
 POMDP_GAMMA     = 0.95   # discount factor (used if computing cumulative reward)
-POMDP_POLICY = os.environ.get("POMDP_POLICY", "eig").lower()
+POMDP_POLICY = os.environ.get("POMDP_POLICY", "llm").lower()
 POMDP_EIG_LEVELS = tuple(
     level.strip()
     for level in os.environ.get("POMDP_EIG_LEVELS", "continent,country,city,street").split(",")
