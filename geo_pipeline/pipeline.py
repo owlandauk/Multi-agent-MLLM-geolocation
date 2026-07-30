@@ -561,7 +561,7 @@ class GeoPipeline:
         initial_posterior: dict[str, float],
         initial_plan: list[dict],
         key_evidence: list[str],
-    ) -> tuple[dict, list[str], float, list[str]]:
+    ) -> tuple[dict, list[str], float, list[str], int]:
         """
         Run one hierarchy level.
 
@@ -615,7 +615,7 @@ class GeoPipeline:
 
             step += 1
 
-        return posterior, key_evidence, visual_delta, observed_evidence
+        return posterior, key_evidence, visual_delta, observed_evidence, step
 
     def _web_enhance_level(
         self,
@@ -639,7 +639,7 @@ class GeoPipeline:
 
         context = _web_enhance_context(level, posterior, query, search_evidence, parent_context)
         prior, plan, raw_resp = self._hypothesize(image, level, context)
-        enhanced_posterior, enhanced_evidence, web_delta, observed_evidence = self._run_level(
+        enhanced_posterior, enhanced_evidence, web_delta, observed_evidence, _ = self._run_level(
             image, level, prior, plan, key_evidence
         )
         enhanced_evidence.append(f"web search ({level}): {search_evidence[:120]}")
@@ -678,7 +678,7 @@ class GeoPipeline:
             prior, plan, raw_resp = self._hypothesize(image, level, context)
             result[f"{level}_raw_response"] = raw_resp
 
-            posterior, key_evidence, visual_delta, level_evidence = self._run_level(
+            posterior, key_evidence, visual_delta, level_evidence, level_steps = self._run_level(
                 image, level, prior, plan, key_evidence
             )
 
@@ -687,7 +687,7 @@ class GeoPipeline:
                     replace_context = _replace_context(level, posterior, key_evidence)
                     prior, plan, raw_resp = self._hypothesize(image, level, replace_context)
                     result[f"{level}_raw_response"] = raw_resp
-                    posterior, key_evidence, visual_delta, level_evidence = self._run_level(
+                    posterior, key_evidence, visual_delta, level_evidence, level_steps = self._run_level(
                         image, level, prior, plan, key_evidence
                     )
                     result["country_replaced"] = True
@@ -724,6 +724,7 @@ class GeoPipeline:
             result[level] = best
             result[f"{level}_posterior"] = posterior
             result[f"{level}_stable"] = _stable_for_descent(posterior)
+            result[f"{level}_steps"] = level_steps
 
             if level == "country" and (block_reason := _descent_block_reason(posterior)):
                 # Even guarded descent would be too noisy. Avoid propagating a
@@ -747,7 +748,7 @@ class GeoPipeline:
         level: str,
         contexts: list[str],
         key_evidence: list[list[str]],
-    ) -> tuple[list[str], list[dict[str, float]], list[float], list[list[str]]]:
+    ) -> tuple[list[str], list[dict[str, float]], list[float], list[list[str]], list[int]]:
         """Run one hierarchy level for a batch and update key_evidence in place."""
         n = len(images)
         hyp_messages = [_hypothesize_prompt(images[i], level, contexts[i]) for i in range(n)]
@@ -845,7 +846,7 @@ class GeoPipeline:
 
                 steps[i] += 1
 
-        return hyp_responses, posteriors, visual_deltas, observed_evidence
+        return hyp_responses, posteriors, visual_deltas, observed_evidence, steps
 
     def predict_batch(self, images: list) -> list[dict]:
         """
@@ -873,7 +874,7 @@ class GeoPipeline:
             subset_images = [images[i] for i in level_indices]
             subset_contexts = [contexts[i] for i in level_indices]
             subset_key_evidence = [key_evidence[i] for i in level_indices]
-            raw_responses, posteriors_subset, deltas_subset, evidence_subset = self._run_level_batch(
+            raw_responses, posteriors_subset, deltas_subset, evidence_subset, steps_subset = self._run_level_batch(
                 subset_images, level, subset_contexts, subset_key_evidence
             )
             posteriors_by_idx = {
@@ -887,6 +888,9 @@ class GeoPipeline:
             }
             level_evidence_by_idx = {
                 idx: evidence for idx, evidence in zip(level_indices, evidence_subset)
+            }
+            steps_by_idx = {
+                idx: step_count for idx, step_count in zip(level_indices, steps_subset)
             }
 
             # Replace: only regenerate the country candidate set when belief is
@@ -903,7 +907,7 @@ class GeoPipeline:
                         for i in unstable
                     ]
                     replace_key_evidence = [key_evidence[i] for i in unstable]
-                    repl_raw, repl_posts, repl_deltas, repl_evidence = self._run_level_batch(
+                    repl_raw, repl_posts, repl_deltas, repl_evidence, repl_steps = self._run_level_batch(
                         replace_images, level, replace_contexts, replace_key_evidence
                     )
                     for idx, raw, post, delta, evidence in zip(
@@ -914,6 +918,8 @@ class GeoPipeline:
                         visual_delta_by_idx[idx] = delta
                         level_evidence_by_idx[idx] = evidence
                         results[idx]["country_replaced"] = True
+                    for idx, step_count in zip(unstable, repl_steps):
+                        steps_by_idx[idx] = step_count
                     unstable = [idx for idx in unstable if _should_replace_country(posteriors_by_idx[idx])]
 
             if level in WEB_SEARCH_LEVELS:
@@ -943,6 +949,7 @@ class GeoPipeline:
                     key_evidence[idx] = enhanced_key_evidence
                     raw_by_idx[idx] = raw
                     level_evidence_by_idx[idx] = observed_evidence
+                    steps_by_idx[idx] = None
                     results[idx][f"{level}_web_enhanced"] = True
                     results[idx][f"{level}_web_search_query"] = web_query
                     results[idx][f"{level}_web_delta"] = web_delta
@@ -963,6 +970,7 @@ class GeoPipeline:
                 results[i][level] = best
                 results[i][f"{level}_posterior"] = posterior
                 results[i][f"{level}_stable"] = _stable_for_descent(posterior)
+                results[i][f"{level}_steps"] = steps_by_idx.get(i)
 
                 if level == "country":
                     results[i]["country_visual_delta"] = visual_delta_by_idx.get(i, 0.0)

@@ -167,6 +167,18 @@ def analyze(records: list[dict]) -> dict:
         float(r["street_web_delta"]) for r in records
         if r.get("street_web_delta") is not None
     ]
+    pomdp_steps = {}
+    for level in ("continent", "country", "city", "street"):
+        vals = [
+            int(r[f"{level}_steps"]) for r in records
+            if r.get(f"{level}_steps") is not None
+        ]
+        if vals:
+            pomdp_steps[level] = {
+                "mean": round(mean(vals), 2),
+                "median": round(median(vals), 2),
+                "max": max(vals),
+            }
     country_stable_known = [r for r in records if r.get("country_stable") is not None]
     country_stable = sum(1 for r in country_stable_known if r.get("country_stable"))
     continent_stable_known = [r for r in records if r.get("continent_stable") is not None]
@@ -270,6 +282,7 @@ def analyze(records: list[dict]) -> dict:
             "mean": round(mean(street_web_deltas), 4) if street_web_deltas else None,
             "median": round(median(street_web_deltas), 4) if street_web_deltas else None,
         },
+        "pomdp_steps": pomdp_steps,
         "country_stable_rate": (
             round(100.0 * country_stable / len(country_stable_known), 2)
             if country_stable_known else None
@@ -349,6 +362,11 @@ def _print_report(report: dict) -> None:
     if report.get("pomdp_policy"):
         print("POMDP policy: " + ", ".join(
             f"{key}={value}" for key, value in sorted(report["pomdp_policy"].items())
+        ))
+    if report.get("pomdp_steps"):
+        print("POMDP steps: " + ", ".join(
+            f"{level}=mean {stats['mean']} med {stats['median']} max {stats['max']}"
+            for level, stats in sorted(report["pomdp_steps"].items())
         ))
     print("\nAccuracy")
     for thr in EVAL_THRESHOLDS:
