@@ -13,6 +13,8 @@ W_sl(e|l) = exp[ α_mean · β · (c_mean − 3) · (1 − λ · σ_c) ]
   where λ is an uncertainty penalty (default 1.0) and σ_c is the std of c across samples.
 """
 
+from __future__ import annotations
+
 import re
 import math
 import numpy as np
@@ -25,6 +27,8 @@ _SCORE_RE = re.compile(
     re.IGNORECASE,
 )
 _CONF_RE = re.compile(r"confidence[:\s]+(0\.\d+|1\.0|1)", re.IGNORECASE)
+_SUPPORT_ITEM_RE = re.compile(r"([^=;\n]+?)\s*=\s*([SCN])\b", re.IGNORECASE)
+_SUPPORT_ALPHA = 0.7
 
 
 def _parse_ct_alpha(text: str) -> tuple[float, float]:
@@ -38,6 +42,42 @@ def _parse_ct_alpha(text: str) -> tuple[float, float]:
 
 def _w_single(c: float, alpha: float) -> float:
     return math.exp(alpha * BETA * (c - 3))
+
+
+def _norm_name(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
+
+
+def _match_hypothesis(label: str, hypotheses: list[str]) -> str | None:
+    label_norm = _norm_name(label)
+    if not label_norm:
+        return None
+    for hyp in hypotheses:
+        hyp_norm = _norm_name(hyp)
+        if label_norm == hyp_norm or label_norm in hyp_norm or hyp_norm in label_norm:
+            return hyp
+    return None
+
+
+def _parse_support_scores(text: str, hypotheses: list[str]) -> dict[str, float] | None:
+    """Parse GeoBayes Probability-Thought S/C/N support lines if present."""
+    if not text or "=" not in text:
+        return None
+
+    ratings: dict[str, str] = {}
+    for label, rating in _SUPPORT_ITEM_RE.findall(text):
+        hyp = _match_hypothesis(label.replace("Support:", ""), hypotheses)
+        if hyp:
+            ratings[hyp] = rating.upper()
+
+    if len(ratings) < max(1, len(hypotheses) // 2):
+        return None
+
+    c_map = {"S": 5.0, "N": 3.0, "C": 1.0}
+    return {
+        hyp: _w_single(c_map.get(ratings.get(hyp, "N"), 3.0), _SUPPORT_ALPHA)
+        for hyp in hypotheses
+    }
 
 
 class SLModule:
@@ -81,6 +121,10 @@ class SLModule:
         Returns W_sl(e | l) for each hypothesis l in hypotheses.
         Uses batch inference to process all hypotheses in parallel.
         """
+        direct_scores = _parse_support_scores(evidence_desc, hypotheses)
+        if direct_scores is not None:
+            return direct_scores
+
         from config import MAX_SL_BATCH_SIZE
         messages_list = [self._make_prompt(evidence_desc, hyp, level) for hyp in hypotheses]
 
@@ -125,15 +169,20 @@ class SLModule:
         """
         from config import MAX_SL_BATCH_SIZE
 
+        results: list[dict[str, float] | None] = []
         flat_msgs: list = []
         owners: list[tuple[int, str]] = []  # (item_idx, hyp_name)
         for item_idx, (evidence, hyps) in enumerate(items):
+            direct_scores = _parse_support_scores(evidence, hyps)
+            results.append(direct_scores)
+            if direct_scores is not None:
+                continue
             for hyp in hyps:
                 flat_msgs.append(self._make_prompt(evidence, hyp, level))
                 owners.append((item_idx, hyp))
 
         if not flat_msgs:
-            return [dict() for _ in items]
+            return [dict(r or {}) for r in results]
 
         flat_responses: list[list[str]] = []
         for i in range(0, len(flat_msgs), MAX_SL_BATCH_SIZE):
@@ -142,8 +191,9 @@ class SLModule:
                 self.mllm.batch_sample_n(batch, n=self.n_samples, max_new_tokens=SL_MAX_NEW_TOKENS)
             )
 
-        results: list[dict[str, float]] = [dict() for _ in items]
         for (item_idx, hyp), responses in zip(owners, flat_responses):
+            if results[item_idx] is None:
+                results[item_idx] = {}
             parsed = [_parse_ct_alpha(r) for r in responses]
             cs     = np.array([p[0] for p in parsed])
             alphas = np.array([p[1] for p in parsed])
@@ -156,4 +206,4 @@ class SLModule:
             w = math.exp(a_mean * BETA * (c_mean - 3) * uncertainty_factor)
             results[item_idx][hyp] = w
 
-        return results
+        return [dict(r or {}) for r in results]

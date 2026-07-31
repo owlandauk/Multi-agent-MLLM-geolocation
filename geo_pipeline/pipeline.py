@@ -508,6 +508,7 @@ def _hypothesize_prompt(image: Image.Image, level: str, context: str = "") -> li
 
 def _verify_prompt(image: Image.Image, task: dict, hypotheses: list[str], level: str) -> list:
     hyp_str = ", ".join(hypotheses[:5])
+    hyp_lines = "\n".join(f"  - {hyp}" for hyp in hypotheses[:5])
     bbox = task.get("bbox")
     region_note = f" Focus on region [x,y,w,h]={bbox}." if bbox else ""
     return [
@@ -519,8 +520,14 @@ def _verify_prompt(image: Image.Image, task: dict, hypotheses: list[str], level:
                     f"Task: {task['desc']}.{region_note}\n"
                     f"Current hypotheses: {hyp_str}\n"
                     f"Reasoning level: {level}\n\n"
-                    "Describe what you observe and how it relates to the hypotheses.\n"
-                    "Respond with: <observation text>"
+                    "Candidate hypotheses:\n"
+                    f"{hyp_lines}\n\n"
+                    "Step 1 - Describe only visible evidence in 1-2 sentences.\n"
+                    "Step 2 - For each candidate above, mark S if the visible evidence supports it, "
+                    "C if it contradicts it, or N if it is neutral/uncertain. Most weak clues should be N.\n\n"
+                    "Respond exactly in this format:\n"
+                    "Observation: <what is visible>\n"
+                    "Support: <hypothesis_1>=S/C/N; <hypothesis_2>=S/C/N; ..."
                 )},
             ],
         }
