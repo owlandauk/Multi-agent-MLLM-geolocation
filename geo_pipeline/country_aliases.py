@@ -10,6 +10,8 @@ country names out of pred_city / pred_street strings).
 """
 from __future__ import annotations
 
+import re
+
 # Country name → continent. Covers the high-prevalence YFCC4K countries plus
 # common alternate names (Burma/Myanmar, Holland/Netherlands, etc.) that
 # Nominatim sometimes mishandles.
@@ -51,7 +53,8 @@ COUNTRY_TO_CONTINENT = {
     "mozambique": "Africa", "zambia": "Africa", "rwanda": "Africa",
     # North America
     "united states": "North America", "usa": "North America",
-    "us": "North America", "america": "North America",
+    "us": "North America", "u s": "North America", "u s a": "North America",
+    "america": "North America",
     "canada": "North America", "mexico": "North America", "cuba": "North America",
     "jamaica": "North America", "guatemala": "North America",
     "panama": "North America", "costa rica": "North America",
@@ -74,6 +77,10 @@ COUNTRY_TO_CONTINENT = {
 # Sorted longest-first so canonicalize_country() picks "united kingdom" over
 # "united" or "kingdom" when a raw label contains both.
 _ALIASES_BY_LENGTH = sorted(COUNTRY_TO_CONTINENT.keys(), key=len, reverse=True)
+_ALIAS_PATTERNS = {
+    alias: re.compile(rf"(?<![a-z0-9]){re.escape(alias)}(?![a-z0-9])")
+    for alias in _ALIASES_BY_LENGTH
+}
 
 
 # Multiple aliases in COUNTRY_TO_CONTINENT refer to the same country
@@ -84,7 +91,8 @@ _ALIASES_BY_LENGTH = sorted(COUNTRY_TO_CONTINENT.keys(), key=len, reverse=True)
 # Map every alias to its canonical (Nominatim-friendly) country name here.
 _ALIAS_TO_CANONICAL = {
     # North America
-    "usa": "united states", "us": "united states", "america": "united states",
+    "usa": "united states", "us": "united states", "u s": "united states",
+    "u s a": "united states", "america": "united states",
     # Europe
     "uk": "united kingdom", "great britain": "united kingdom",
     "england": "united kingdom", "scotland": "united kingdom",
@@ -114,7 +122,7 @@ def canonicalize_country(raw: str) -> str | None:
     """
     if not raw:
         return None
-    low = raw.strip().lower()
+    low = re.sub(r"[^a-z0-9]+", " ", raw.strip().lower()).strip()
 
     def _canon(name: str) -> str:
         return _ALIAS_TO_CANONICAL.get(name, name)
@@ -124,13 +132,15 @@ def canonicalize_country(raw: str) -> str | None:
         return _canon(low)
 
     # last comma-separated tail: "City, Country" → "country"
-    if "," in low:
-        tail = low.rsplit(",", 1)[1].strip()
+    if "," in raw:
+        tail = re.sub(r"[^a-z0-9]+", " ", raw.rsplit(",", 1)[1].lower()).strip()
         if tail in COUNTRY_TO_CONTINENT:
             return _canon(tail)
 
-    # longest-match substring scan
+    # Longest-match scan with token boundaries. This avoids false positives like
+    # "museum" -> "us" and "Roman" -> "Oman" while still matching country
+    # names embedded in longer labels.
     for alias in _ALIASES_BY_LENGTH:
-        if alias in low:
+        if _ALIAS_PATTERNS[alias].search(low):
             return _canon(alias)
     return None
