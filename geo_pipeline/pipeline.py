@@ -302,9 +302,20 @@ def _should_web_enhance_country(posterior: dict[str, float], visual_delta: float
     return _posterior_web_trigger(posterior, visual_delta)
 
 
+def _clean_search_clue(item: str) -> str:
+    text = str(item or "")
+    obs_match = re.search(r"(?is)\bobservation\s*:\s*(.*?)(?:\n\s*support\s*:|$)", text)
+    if obs_match:
+        text = obs_match.group(1)
+    text = re.sub(r"(?is)\bsupport\s*:.*", " ", text)
+    text = re.sub(r"(?i)<\/?observation text>", " ", text)
+    text = re.sub(r"\s+", " ", text).strip(" ;")
+    return text
+
+
 def _compact_search_evidence(evidence: list[str], max_chars: int = 180) -> str:
-    clues = "; ".join(str(item).strip() for item in evidence[-3:] if str(item).strip())
-    clues = re.sub(r"\s+", " ", clues).strip()
+    cleaned = [_clean_search_clue(item) for item in evidence[-3:]]
+    clues = "; ".join(item for item in cleaned if item)
     if not clues:
         return "visual clue"
     if len(clues) <= max_chars:
