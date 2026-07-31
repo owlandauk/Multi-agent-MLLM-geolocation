@@ -32,6 +32,7 @@ from config import (
     GUARDED_DESCENT_THR, COUNTRY_REPLACE_TOP_THR,
     COUNTRY_REPLACE_MARGIN_THR, COUNTRY_REPLACE_ATTEMPTS, COUNTRY_CUE_ENSEMBLE,
     COUNTRY_GEOREASONER_SEED, GEOREASONER_COUNTRY_BOOST,
+    GEOREASONER_REQUIRE_DIRECT_CLUE,
     ENABLE_CONTINENT_LEVEL,
     CONTINENT_REG_MIN_TOP, CONTINENT_REG_STRENGTH, CONTINENT_REG_FLOOR,
     WEB_SEARCH_TOP_THR, WEB_SEARCH_MARGIN_THR, WEB_SEARCH_REQUIRE_ENTITY,
@@ -631,12 +632,37 @@ def _parse_georeasoner_country(text: str) -> str | None:
     return canonicalize_country(raw_country)
 
 
+_GEOREASONER_DIRECT_CLUE_MARKERS = (
+    "address", "area code", "cathedral", "chain", "currency", "domain", "flag",
+    "landmark", "language", "license", "marked", "measurement", "plate",
+    "reads", "road sign", "script", "signage", "station", "store", "storefront",
+    "street sign", "temple", "text", "zip code",
+)
+
+_GEOREASONER_STRONG_US_MARKERS = (
+    "american flag", "area code", "interstate", "license plate", "mph",
+    "state route", "u.s. route", "us route", "zip code",
+)
+
+
+def _georeasoner_has_direct_clue(text: str, country: str) -> bool:
+    if not GEOREASONER_REQUIRE_DIRECT_CLUE:
+        return True
+    low = (text or "").lower()
+    if country == "united states":
+        return any(marker in low for marker in _GEOREASONER_STRONG_US_MARKERS)
+    return any(marker in low for marker in _GEOREASONER_DIRECT_CLUE_MARKERS)
+
+
 def _seed_country_prior(
     prior: dict[str, float],
     country: str | None,
+    seed_text: str = "",
     boost: float = GEOREASONER_COUNTRY_BOOST,
 ) -> tuple[dict[str, float], bool]:
     if not country or boost <= 0:
+        return prior, False
+    if not _georeasoner_has_direct_clue(seed_text, country):
         return prior, False
     if not prior or set(prior) == {"Unknown"}:
         return {country: 1.0}, True
@@ -714,7 +740,7 @@ class GeoPipeline:
             if level == "country" and COUNTRY_GEOREASONER_SEED:
                 seed_response = self.mllm.generate(_georeasoner_country_prompt(image))
                 prior, seeded = _seed_country_prior(
-                    {"Unknown": 1.0}, _parse_georeasoner_country(seed_response)
+                    {"Unknown": 1.0}, _parse_georeasoner_country(seed_response), seed_response
                 )
                 if seeded:
                     raw_bundle = json.dumps(
@@ -743,7 +769,7 @@ class GeoPipeline:
             if COUNTRY_GEOREASONER_SEED:
                 seed_response = self.mllm.generate(_georeasoner_country_prompt(image))
                 prior, seeded = _seed_country_prior(
-                    prior, _parse_georeasoner_country(seed_response)
+                    prior, _parse_georeasoner_country(seed_response), seed_response
                 )
             plan = _prepend_country_tasks(parsed.get("verification_plan", []))
             raw_bundle = json.dumps(
@@ -763,7 +789,7 @@ class GeoPipeline:
         if level == "country" and COUNTRY_GEOREASONER_SEED:
             seed_response = self.mllm.generate(_georeasoner_country_prompt(image))
             prior, seeded = _seed_country_prior(
-                prior, _parse_georeasoner_country(seed_response)
+                prior, _parse_georeasoner_country(seed_response), seed_response
             )
             response = json.dumps(
                 {
@@ -998,7 +1024,7 @@ class GeoPipeline:
                 prior = _softmax_prior(raw_scores) if raw_scores else {"Unknown": 1.0}
                 if seed_resp:
                     prior, seeded = _seed_country_prior(
-                        prior, _parse_georeasoner_country(seed_resp)
+                        prior, _parse_georeasoner_country(seed_resp), seed_resp
                     )
                 priors.append(prior)
                 plan = parsed.get("verification_plan", []) if parsed else []
@@ -1016,7 +1042,7 @@ class GeoPipeline:
                 prior = {"Unknown": 1.0}
                 if seed_resp:
                     prior, seeded = _seed_country_prior(
-                        prior, _parse_georeasoner_country(seed_resp)
+                        prior, _parse_georeasoner_country(seed_resp), seed_resp
                     )
                 priors.append(prior)
                 plans.append([])
@@ -1034,7 +1060,7 @@ class GeoPipeline:
                 prior = _softmax_prior(raw_scores) if raw_scores else {"Unknown": 1.0}
                 if seed_resp:
                     prior, seeded = _seed_country_prior(
-                        prior, _parse_georeasoner_country(seed_resp)
+                        prior, _parse_georeasoner_country(seed_resp), seed_resp
                     )
                 priors.append(prior)
                 plans.append(parsed.get("verification_plan", []))

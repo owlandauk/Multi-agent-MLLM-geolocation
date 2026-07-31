@@ -36,6 +36,9 @@ COUNTRY_GEOREASONER_SEED = os.environ.get("COUNTRY_GEOREASONER_SEED", "0").lower
     "1", "true", "yes", "on"
 }
 GEOREASONER_COUNTRY_BOOST = float(os.environ.get("GEOREASONER_COUNTRY_BOOST", "0.2"))
+GEOREASONER_REQUIRE_DIRECT_CLUE = os.environ.get(
+    "GEOREASONER_REQUIRE_DIRECT_CLUE", "1"
+).lower() not in {"0", "false", "no", "off"}
 
 # ── Continent-first country calibration ──────────────────────────────────────
 # The continent stage is a weak prior for country inference. It reduces obvious
