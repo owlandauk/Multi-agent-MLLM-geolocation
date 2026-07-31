@@ -31,6 +31,7 @@ from config import (
     STRONG_POSTERIOR_THR, STABLE_MARGIN_THR, STABLE_ENTROPY_THR,
     GUARDED_DESCENT_THR, COUNTRY_REPLACE_TOP_THR,
     COUNTRY_REPLACE_MARGIN_THR, COUNTRY_REPLACE_ATTEMPTS, COUNTRY_CUE_ENSEMBLE,
+    BALANCED_COUNTRY_GUARD,
     COUNTRY_GEOREASONER_SEED, GEOREASONER_COUNTRY_BOOST,
     GEOREASONER_REQUIRE_DIRECT_CLUE,
     ENABLE_CONTINENT_LEVEL,
@@ -551,18 +552,25 @@ def _hypothesize_prompt(image: Image.Image, level: str, context: str = "") -> li
         "city":    "Identify the most likely cities and generate a plan to verify.",
         "street":  "Identify the most likely streets/districts and generate a plan to verify.",
     }[level]
+    country_rule = (
+        "For country-level reasoning, return country names only, not continents or regions. "
+        "Separate direct localizing evidence such as road signs, plates, addresses, named places, landmarks, and place-specific scripts "
+        "from generic cues such as English text, brands, food, ordinary roads, vegetation, indoor objects, or common architecture. "
+        "Generic cues alone are weak evidence: keep alternatives instead of ruling countries out. "
+        "United States, Canada, United Kingdom, Japan, and other familiar countries can receive high confidence when direct localizing evidence supports them. "
+    ) if BALANCED_COUNTRY_GUARD else (
+        "For country-level reasoning, return country names only, not continents or regions. "
+        "Separate direct localizing evidence such as road signs, plates, addresses, named places, landmarks, and place-specific scripts "
+        "from generic cues such as English text, brands, food, ordinary roads, vegetation, indoor objects, or common architecture. "
+        "Generic cues alone must not give high confidence to any familiar country, including United States, Canada, United Kingdom, or Japan. "
+    )
     level_rules = {
         "continent": (
             "For continent-level reasoning, return continent names only: "
             "Africa, Asia, Europe, North America, Oceania, or South America. "
             "Do not return countries, regions, or hemispheres. "
         ),
-        "country": (
-            "For country-level reasoning, return country names only, not continents or regions. "
-            "Separate direct localizing evidence such as road signs, plates, addresses, named places, landmarks, and place-specific scripts "
-            "from generic cues such as English text, brands, food, ordinary roads, vegetation, indoor objects, or common architecture. "
-            "Generic cues alone must not give high confidence to any familiar country, including United States, Canada, United Kingdom, or Japan. "
-        ),
+        "country": country_rule,
         "city": "For city-level reasoning, return city or locality names. ",
         "street": "For street-level reasoning, return street, district, or landmark names. ",
     }[level]

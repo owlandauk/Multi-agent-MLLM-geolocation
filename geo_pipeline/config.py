@@ -32,6 +32,9 @@ COUNTRY_REPLACE_ATTEMPTS = 0
 COUNTRY_CUE_ENSEMBLE = os.environ.get("COUNTRY_CUE_ENSEMBLE", "0").lower() in {
     "1", "true", "yes", "on"
 }
+BALANCED_COUNTRY_GUARD = os.environ.get("BALANCED_COUNTRY_GUARD", "0").lower() in {
+    "1", "true", "yes", "on"
+}
 COUNTRY_GEOREASONER_SEED = os.environ.get("COUNTRY_GEOREASONER_SEED", "0").lower() in {
     "1", "true", "yes", "on"
 }
