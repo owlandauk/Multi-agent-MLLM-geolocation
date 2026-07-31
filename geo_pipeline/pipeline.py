@@ -506,7 +506,7 @@ def _city_country_factcheck_prompt(city: str, country: str) -> list:
         "You are checking geographic consistency only; do not infer from an image.\n"
         f"Question: Is the named city/locality '{city}' located in the country '{country}'?\n"
         "Use the usual primary geographic meaning of the city name unless the phrase explicitly "
-        "names a smaller locality in that country.\n"
+        "names a smaller locality in that country. Ignore capitalization and spelling style.\n"
         "Answer JSON only: "
         '{"consistent": true|false, "true_country": "country name or null", "reason": "short"}'
     )
@@ -548,6 +548,8 @@ def _should_factcheck_city_country(result: dict) -> bool:
     country = canonicalize_country(result.get("country") or "")
     if not city or city == "Unknown" or not country:
         return False
+    if canonicalize_country(city) == country:
+        return False
     country_top = max((result.get("country_posterior") or {}).values(), default=0.0)
     return float(country_top) >= CITY_COUNTRY_FACTCHECK_MIN_COUNTRY_TOP
 
@@ -559,6 +561,11 @@ def _apply_city_country_factcheck_result(result: dict, raw: str) -> bool:
     result["city_country_factcheck_true_country"] = parsed["true_country"]
     result["city_country_factcheck_reason"] = parsed["reason"]
     if parsed["consistent"] is not False:
+        result["city_country_factcheck_rejected"] = False
+        return False
+    predicted_country = canonicalize_country(result.get("country") or "")
+    checked_country = canonicalize_country(parsed.get("true_country") or "")
+    if checked_country and predicted_country and checked_country == predicted_country:
         result["city_country_factcheck_rejected"] = False
         return False
 
