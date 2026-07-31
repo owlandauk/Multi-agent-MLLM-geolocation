@@ -27,7 +27,7 @@ from country_aliases import canonicalize_country, continent_of
 from web_search import WebSearchClient, format_search_evidence
 from config import (
     PRIOR_TEMP, PRIOR_CUTOFF, TRANSITION_THR, ENHANCE_THR,
-    VERIFY_MAX_NEW_TOKENS, POMDP_MAX_NEW_TOKENS,
+    VERIFY_MAX_NEW_TOKENS, POMDP_MAX_NEW_TOKENS, VERIFY_SUPPORT_FORMAT,
     STRONG_POSTERIOR_THR, STABLE_MARGIN_THR, STABLE_ENTROPY_THR,
     GUARDED_DESCENT_THR, COUNTRY_REPLACE_TOP_THR,
     COUNTRY_REPLACE_MARGIN_THR, COUNTRY_REPLACE_ATTEMPTS,
@@ -508,16 +508,34 @@ def _hypothesize_prompt(image: Image.Image, level: str, context: str = "") -> li
 
 def _verify_prompt(image: Image.Image, task: dict, hypotheses: list[str], level: str) -> list:
     hyp_str = ", ".join(hypotheses[:5])
-    hyp_lines = "\n".join(f"  - {hyp}" for hyp in hypotheses[:5])
     bbox = task.get("bbox")
+    desc = task.get("desc", "")
     region_note = f" Focus on region [x,y,w,h]={bbox}." if bbox else ""
+    if not VERIFY_SUPPORT_FORMAT:
+        return [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": image},
+                    {"type": "text", "text": (
+                        f"Task: {desc}.{region_note}\n"
+                        f"Current hypotheses: {hyp_str}\n"
+                        f"Reasoning level: {level}\n\n"
+                        "Describe what you observe and how it relates to the hypotheses.\n"
+                        "Respond with: <observation text>"
+                    )},
+                ],
+            }
+        ]
+
+    hyp_lines = "\n".join(f"  - {hyp}" for hyp in hypotheses[:5])
     return [
         {
             "role": "user",
             "content": [
                 {"type": "image", "image": image},
                 {"type": "text", "text": (
-                    f"Task: {task['desc']}.{region_note}\n"
+                    f"Task: {desc}.{region_note}\n"
                     f"Current hypotheses: {hyp_str}\n"
                     f"Reasoning level: {level}\n\n"
                     "Candidate hypotheses:\n"

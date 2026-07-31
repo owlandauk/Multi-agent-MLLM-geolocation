@@ -87,6 +87,9 @@ EVAL_THRESHOLDS = [1, 25, 200, 750, 2500]
 MAX_NEW_TOKENS         = 384    # default cap (used by hypothesize)
 SL_MAX_NEW_TOKENS      = 48     # SL responses are tiny: "Rating: X / Confidence: Y / one sentence"
 VERIFY_MAX_NEW_TOKENS  = 160    # verify observation: a paragraph is plenty
+VERIFY_SUPPORT_FORMAT = os.environ.get("VERIFY_SUPPORT_FORMAT", "0").lower() in {
+    "1", "true", "yes", "on"
+}
 POMDP_MAX_NEW_TOKENS   = 64     # policy returns {"task_index": N, "reason": "..."}
 
 # ── Batch inference ────────────────────────────────────────────────────────────
