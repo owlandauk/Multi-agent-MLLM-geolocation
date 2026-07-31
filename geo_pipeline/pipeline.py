@@ -31,6 +31,7 @@ from config import (
     STRONG_POSTERIOR_THR, STABLE_MARGIN_THR, STABLE_ENTROPY_THR,
     GUARDED_DESCENT_THR, COUNTRY_REPLACE_TOP_THR,
     COUNTRY_REPLACE_MARGIN_THR, COUNTRY_REPLACE_ATTEMPTS, COUNTRY_CUE_ENSEMBLE,
+    COUNTRY_GEOREASONER_SEED, GEOREASONER_COUNTRY_BOOST,
     ENABLE_CONTINENT_LEVEL,
     CONTINENT_REG_MIN_TOP, CONTINENT_REG_STRENGTH, CONTINENT_REG_FLOOR,
     WEB_SEARCH_TOP_THR, WEB_SEARCH_MARGIN_THR, WEB_SEARCH_REQUIRE_ENTITY,
@@ -602,6 +603,49 @@ def _country_cue_prompt(image: Image.Image, cue_instruction: str) -> list:
     ]
 
 
+def _georeasoner_country_prompt(image: Image.Image) -> list:
+    return [
+        {
+            "role": "user",
+            "content": [
+                {"type": "image", "image": image},
+                {"type": "text", "text": (
+                    "According to the content of the image, please think step by step and deduce "
+                    "in which country and city the image is most likely located and give the "
+                    "most important reason. Output in JSON format, e.g. "
+                    '{"country":"", "city":"", "reasons":""}.'
+                )},
+            ],
+        }
+    ]
+
+
+def _parse_georeasoner_country(text: str) -> str | None:
+    parsed = _try_parse_json(text)
+    raw_country = ""
+    if isinstance(parsed, dict):
+        raw_country = str(parsed.get("country") or parsed.get("Country") or "")
+    if not raw_country:
+        match = re.search(r'"?country"?\s*[:=]\s*"?([^"\n,}]+)', text or "", re.IGNORECASE)
+        raw_country = match.group(1).strip() if match else ""
+    return canonicalize_country(raw_country)
+
+
+def _seed_country_prior(
+    prior: dict[str, float],
+    country: str | None,
+    boost: float = GEOREASONER_COUNTRY_BOOST,
+) -> tuple[dict[str, float], bool]:
+    if not country or boost <= 0:
+        return prior, False
+    if not prior or set(prior) == {"Unknown"}:
+        return {country: 1.0}, True
+    boost = min(float(boost), 0.95)
+    seeded = dict(prior)
+    seeded[country] = seeded.get(country, 0.0) + boost
+    return _renormalize_posterior(seeded), True
+
+
 def _verify_prompt(image: Image.Image, task: dict, hypotheses: list[str], level: str) -> list:
     hyp_str = ", ".join(hypotheses[:5])
     bbox = task.get("bbox")
@@ -667,6 +711,21 @@ class GeoPipeline:
         response = self.mllm.generate(messages)
         parsed = _parse_hypothesis_payload(response)
         if parsed is None or "hypotheses" not in parsed:
+            if level == "country" and COUNTRY_GEOREASONER_SEED:
+                seed_response = self.mllm.generate(_georeasoner_country_prompt(image))
+                prior, seeded = _seed_country_prior(
+                    {"Unknown": 1.0}, _parse_georeasoner_country(seed_response)
+                )
+                if seeded:
+                    raw_bundle = json.dumps(
+                        {
+                            "general": response,
+                            "georeasoner_response": seed_response,
+                            "georeasoner_seeded": True,
+                        },
+                        ensure_ascii=True,
+                    )
+                    return prior, [], raw_bundle
             # fallback: single hypothesis with uniform prior
             return {"Unknown": 1.0}, [], response
 
@@ -679,9 +738,21 @@ class GeoPipeline:
             parsed_sources = [parsed] if parsed and "hypotheses" in parsed else []
             raw_scores = _merge_country_scores([*parsed_sources, *cue_parsed])
             prior = _softmax_prior(raw_scores) if raw_scores else {"Unknown": 1.0}
+            seed_response = ""
+            seeded = False
+            if COUNTRY_GEOREASONER_SEED:
+                seed_response = self.mllm.generate(_georeasoner_country_prompt(image))
+                prior, seeded = _seed_country_prior(
+                    prior, _parse_georeasoner_country(seed_response)
+                )
             plan = _prepend_country_tasks(parsed.get("verification_plan", []))
             raw_bundle = json.dumps(
-                {"general": response, "cue_responses": cue_responses},
+                {
+                    "general": response,
+                    "cue_responses": cue_responses,
+                    "georeasoner_response": seed_response,
+                    "georeasoner_seeded": seeded,
+                },
                 ensure_ascii=True,
             )
             return prior, plan, raw_bundle
@@ -689,6 +760,19 @@ class GeoPipeline:
         raw_scores = _collect_scores(parsed["hypotheses"], level)
         prior = _softmax_prior(raw_scores) if raw_scores else {"Unknown": 1.0}
         plan  = parsed.get("verification_plan", [])
+        if level == "country" and COUNTRY_GEOREASONER_SEED:
+            seed_response = self.mllm.generate(_georeasoner_country_prompt(image))
+            prior, seeded = _seed_country_prior(
+                prior, _parse_georeasoner_country(seed_response)
+            )
+            response = json.dumps(
+                {
+                    "general": response,
+                    "georeasoner_response": seed_response,
+                    "georeasoner_seeded": seeded,
+                },
+                ensure_ascii=True,
+            )
         return prior, plan, response
 
     def _run_level(
@@ -895,30 +979,74 @@ class GeoPipeline:
             for _, cue_text in _COUNTRY_CUE_PROMPTS:
                 cue_messages = [_country_cue_prompt(images[i], cue_text) for i in range(n)]
                 cue_responses_by_cue.append(self.mllm.batch_generate(cue_messages))
+        georeasoner_responses = []
+        if level == "country" and COUNTRY_GEOREASONER_SEED:
+            seed_messages = [_georeasoner_country_prompt(images[i]) for i in range(n)]
+            georeasoner_responses = self.mllm.batch_generate(seed_messages)
 
         priors = []
         plans = []
         for idx, resp in enumerate(hyp_responses):
             parsed = _parse_hypothesis_payload(resp)
+            seed_resp = georeasoner_responses[idx] if georeasoner_responses else ""
+            seeded = False
             if level == "country" and COUNTRY_CUE_ENSEMBLE:
                 cue_resps = [cue_batch[idx] for cue_batch in cue_responses_by_cue]
                 cue_parsed = [_parse_hypothesis_payload(cue_resp) for cue_resp in cue_resps]
                 parsed_sources = [parsed] if parsed and "hypotheses" in parsed else []
                 raw_scores = _merge_country_scores([*parsed_sources, *cue_parsed])
-                priors.append(_softmax_prior(raw_scores) if raw_scores else {"Unknown": 1.0})
+                prior = _softmax_prior(raw_scores) if raw_scores else {"Unknown": 1.0}
+                if seed_resp:
+                    prior, seeded = _seed_country_prior(
+                        prior, _parse_georeasoner_country(seed_resp)
+                    )
+                priors.append(prior)
                 plan = parsed.get("verification_plan", []) if parsed else []
                 plans.append(_prepend_country_tasks(plan))
                 hyp_responses[idx] = json.dumps(
-                    {"general": resp, "cue_responses": cue_resps},
+                    {
+                        "general": resp,
+                        "cue_responses": cue_resps,
+                        "georeasoner_response": seed_resp,
+                        "georeasoner_seeded": seeded,
+                    },
                     ensure_ascii=True,
                 )
             elif parsed is None or "hypotheses" not in parsed:
-                priors.append({"Unknown": 1.0})
+                prior = {"Unknown": 1.0}
+                if seed_resp:
+                    prior, seeded = _seed_country_prior(
+                        prior, _parse_georeasoner_country(seed_resp)
+                    )
+                priors.append(prior)
                 plans.append([])
+                if seed_resp:
+                    hyp_responses[idx] = json.dumps(
+                        {
+                            "general": resp,
+                            "georeasoner_response": seed_resp,
+                            "georeasoner_seeded": seeded,
+                        },
+                        ensure_ascii=True,
+                    )
             else:
                 raw_scores = _collect_scores(parsed["hypotheses"], level)
-                priors.append(_softmax_prior(raw_scores) if raw_scores else {"Unknown": 1.0})
+                prior = _softmax_prior(raw_scores) if raw_scores else {"Unknown": 1.0}
+                if seed_resp:
+                    prior, seeded = _seed_country_prior(
+                        prior, _parse_georeasoner_country(seed_resp)
+                    )
+                priors.append(prior)
                 plans.append(parsed.get("verification_plan", []))
+                if seed_resp:
+                    hyp_responses[idx] = json.dumps(
+                        {
+                            "general": resp,
+                            "georeasoner_response": seed_resp,
+                            "georeasoner_seeded": seeded,
+                        },
+                        ensure_ascii=True,
+                    )
 
         posteriors = [dict(p) for p in priors]
         pending = [list(pl) for pl in plans]

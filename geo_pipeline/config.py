@@ -32,6 +32,10 @@ COUNTRY_REPLACE_ATTEMPTS = 0
 COUNTRY_CUE_ENSEMBLE = os.environ.get("COUNTRY_CUE_ENSEMBLE", "0").lower() in {
     "1", "true", "yes", "on"
 }
+COUNTRY_GEOREASONER_SEED = os.environ.get("COUNTRY_GEOREASONER_SEED", "0").lower() in {
+    "1", "true", "yes", "on"
+}
+GEOREASONER_COUNTRY_BOOST = float(os.environ.get("GEOREASONER_COUNTRY_BOOST", "0.2"))
 
 # ── Continent-first country calibration ──────────────────────────────────────
 # The continent stage is a weak prior for country inference. It reduces obvious
