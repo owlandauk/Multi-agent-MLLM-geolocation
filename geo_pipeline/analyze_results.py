@@ -186,6 +186,12 @@ def analyze(records: list[dict]) -> dict:
     country_continent_regularized = sum(1 for r in records if r.get("country_continent_regularized"))
     city_backtrack = sum(1 for r in records if r.get("city_backtrack_conflicts"))
     street_backtrack = sum(1 for r in records if r.get("street_backtrack_conflicts"))
+    city_country_factchecked = sum(
+        1 for r in records if r.get("city_country_factcheck_consistent") is not None
+    )
+    city_country_factcheck_rejected = sum(
+        1 for r in records if r.get("city_country_factcheck_rejected")
+    )
     has_soft_conflict_fields = any(
         "city_soft_conflicts" in r or "street_soft_conflicts" in r
         for r in records
@@ -295,6 +301,12 @@ def analyze(records: list[dict]) -> dict:
             "city": round(100.0 * city_backtrack / total, 2) if total else 0.0,
             "street": round(100.0 * street_backtrack / total, 2) if total else 0.0,
         },
+        "city_country_factcheck_rate": round(
+            100.0 * city_country_factchecked / total, 2
+        ) if total else 0.0,
+        "city_country_factcheck_reject_rate": round(
+            100.0 * city_country_factcheck_rejected / total, 2
+        ) if total else 0.0,
         "soft_conflict_rate": ({
             "city": round(100.0 * city_soft_conflict / total, 2) if total else 0.0,
             "street": round(100.0 * street_soft_conflict / total, 2) if total else 0.0,
@@ -312,6 +324,9 @@ def analyze(records: list[dict]) -> dict:
             "country_web_enhanced": _bucket_accuracy(records, lambda r: bool(r.get("country_web_enhanced"))),
             "city_web_enhanced": _bucket_accuracy(records, lambda r: bool(r.get("city_web_enhanced"))),
             "street_web_enhanced": _bucket_accuracy(records, lambda r: bool(r.get("street_web_enhanced"))),
+            "city_country_factcheck_rejected": _bucket_accuracy(
+                records, lambda r: bool(r.get("city_country_factcheck_rejected"))
+            ),
             "country_replaced": _bucket_accuracy(records, lambda r: bool(r.get("country_replaced"))),
             "country_descent_blocked_reason": _bucket_accuracy(
                 records,
@@ -431,6 +446,12 @@ def _print_report(report: dict) -> None:
         "Backtrack conflict rate: "
         f"city={backtrack['city']:.2f}% street={backtrack['street']:.2f}%"
     )
+    if report.get("city_country_factcheck_rate"):
+        print(
+            "City-country factcheck: "
+            f"checked={report['city_country_factcheck_rate']:.2f}% "
+            f"rejected={report['city_country_factcheck_reject_rate']:.2f}%"
+        )
     soft_conflict = report.get("soft_conflict_rate", {})
     if soft_conflict:
         print(
@@ -488,6 +509,7 @@ def _print_report(report: dict) -> None:
             "country_web_enhanced",
             "city_web_enhanced",
             "street_web_enhanced",
+            "city_country_factcheck_rejected",
             "country_descent_blocked_reason",
         ):
             bucket = buckets.get(bucket_name, {})

@@ -42,6 +42,12 @@ GEOREASONER_COUNTRY_BOOST = float(os.environ.get("GEOREASONER_COUNTRY_BOOST", "0
 GEOREASONER_REQUIRE_DIRECT_CLUE = os.environ.get(
     "GEOREASONER_REQUIRE_DIRECT_CLUE", "1"
 ).lower() not in {"0", "false", "no", "off"}
+CITY_COUNTRY_FACTCHECK = os.environ.get("CITY_COUNTRY_FACTCHECK", "0").lower() in {
+    "1", "true", "yes", "on"
+}
+CITY_COUNTRY_FACTCHECK_MIN_COUNTRY_TOP = float(
+    os.environ.get("CITY_COUNTRY_FACTCHECK_MIN_COUNTRY_TOP", "0.55")
+)
 
 # ── Continent-first country calibration ──────────────────────────────────────
 # The continent stage is a weak prior for country inference. It reduces obvious
@@ -104,6 +110,7 @@ VERIFY_SUPPORT_FORMAT = os.environ.get("VERIFY_SUPPORT_FORMAT", "0").lower() in 
     "1", "true", "yes", "on"
 }
 POMDP_MAX_NEW_TOKENS   = 64     # policy returns {"task_index": N, "reason": "..."}
+FACTCHECK_MAX_NEW_TOKENS = 96   # text-only city/country consistency check
 
 # ── Batch inference ────────────────────────────────────────────────────────────
 MAX_SL_BATCH_SIZE = 8    # original prompts per SL batch; multiplied by SL_N_SAMPLES → actual GPU batch. Reduce if OOM.

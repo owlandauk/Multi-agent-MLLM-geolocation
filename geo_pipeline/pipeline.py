@@ -34,10 +34,12 @@ from config import (
     BALANCED_COUNTRY_GUARD,
     COUNTRY_GEOREASONER_SEED, GEOREASONER_COUNTRY_BOOST,
     GEOREASONER_REQUIRE_DIRECT_CLUE,
+    CITY_COUNTRY_FACTCHECK, CITY_COUNTRY_FACTCHECK_MIN_COUNTRY_TOP,
     ENABLE_CONTINENT_LEVEL,
     CONTINENT_REG_MIN_TOP, CONTINENT_REG_STRENGTH, CONTINENT_REG_FLOOR,
     WEB_SEARCH_TOP_THR, WEB_SEARCH_MARGIN_THR, WEB_SEARCH_REQUIRE_ENTITY,
     WEB_SEARCH_LEVELS,
+    FACTCHECK_MAX_NEW_TOKENS,
 )
 
 LEVELS = ["continent", "country", "city", "street"] if ENABLE_CONTINENT_LEVEL else [
@@ -493,6 +495,82 @@ def _filter_child_posterior(
         return posterior, conflicts
     total = sum(filtered.values())
     return ({k: v / total for k, v in filtered.items()} if total > 0 else filtered), conflicts
+
+
+def _text_prompt(text: str) -> list:
+    return [{"role": "user", "content": [{"type": "text", "text": text}]}]
+
+
+def _city_country_factcheck_prompt(city: str, country: str) -> list:
+    text = (
+        "You are checking geographic consistency only; do not infer from an image.\n"
+        f"Question: Is the named city/locality '{city}' located in the country '{country}'?\n"
+        "Use the usual primary geographic meaning of the city name unless the phrase explicitly "
+        "names a smaller locality in that country.\n"
+        "Answer JSON only: "
+        '{"consistent": true|false, "true_country": "country name or null", "reason": "short"}'
+    )
+    return _text_prompt(text)
+
+
+def _parse_city_country_factcheck(raw: str) -> dict:
+    parsed = _try_parse_json(raw)
+    if not isinstance(parsed, dict):
+        return {"consistent": None, "true_country": None, "reason": "parse_failed"}
+    consistent = parsed.get("consistent")
+    if isinstance(consistent, str):
+        low = consistent.strip().lower()
+        if low in {"true", "yes", "consistent"}:
+            consistent = True
+        elif low in {"false", "no", "inconsistent"}:
+            consistent = False
+        else:
+            consistent = None
+    elif not isinstance(consistent, bool):
+        consistent = None
+
+    true_country = parsed.get("true_country")
+    if true_country is None:
+        true_country = parsed.get("country")
+    if isinstance(true_country, str) and true_country.strip().lower() in {"", "null", "none", "unknown"}:
+        true_country = None
+    return {
+        "consistent": consistent,
+        "true_country": true_country if isinstance(true_country, str) else None,
+        "reason": str(parsed.get("reason") or ""),
+    }
+
+
+def _should_factcheck_city_country(result: dict) -> bool:
+    if not CITY_COUNTRY_FACTCHECK:
+        return False
+    city = result.get("city")
+    country = canonicalize_country(result.get("country") or "")
+    if not city or city == "Unknown" or not country:
+        return False
+    country_top = max((result.get("country_posterior") or {}).values(), default=0.0)
+    return float(country_top) >= CITY_COUNTRY_FACTCHECK_MIN_COUNTRY_TOP
+
+
+def _apply_city_country_factcheck_result(result: dict, raw: str) -> bool:
+    parsed = _parse_city_country_factcheck(raw)
+    result["city_country_factcheck_raw"] = raw
+    result["city_country_factcheck_consistent"] = parsed["consistent"]
+    result["city_country_factcheck_true_country"] = parsed["true_country"]
+    result["city_country_factcheck_reason"] = parsed["reason"]
+    if parsed["consistent"] is not False:
+        result["city_country_factcheck_rejected"] = False
+        return False
+
+    result["city_country_factcheck_rejected"] = True
+    result["city_before_factcheck"] = result.get("city")
+    result["city"] = "Unknown"
+    result["city_posterior"] = {}
+    result["city_stable"] = False
+    result["street"] = "Unknown"
+    result["street_posterior"] = {}
+    result["street_stable"] = False
+    return True
 
 
 def _replace_context(level: str, posterior: dict[str, float], key_evidence: list[str]) -> str:
@@ -986,6 +1064,15 @@ class GeoPipeline:
             result[f"{level}_stable"] = _stable_for_descent(posterior)
             result[f"{level}_steps"] = level_steps
 
+            if level == "city" and _should_factcheck_city_country(result):
+                raw_fc = self.mllm.generate(
+                    _city_country_factcheck_prompt(result["city"], result["country"]),
+                    max_new_tokens=FACTCHECK_MAX_NEW_TOKENS,
+                )
+                if _apply_city_country_factcheck_result(result, raw_fc):
+                    posterior = {}
+                    best = "Unknown"
+
             if level == "country" and (block_reason := _descent_block_reason(posterior)):
                 # Even guarded descent would be too noisy. Avoid propagating a
                 # very weak parent posterior into child prompts.
@@ -1314,6 +1401,23 @@ class GeoPipeline:
                     results[i]["street"] = "Unknown"
                     results[i]["street_posterior"] = {}
                     skip_finer[i] = True
+
+            if level == "city" and CITY_COUNTRY_FACTCHECK:
+                factcheck_indices = [
+                    i for i in level_indices
+                    if not skip_finer[i] and _should_factcheck_city_country(results[i])
+                ]
+                if factcheck_indices:
+                    messages = [
+                        _city_country_factcheck_prompt(results[i]["city"], results[i]["country"])
+                        for i in factcheck_indices
+                    ]
+                    raw_checks = self.mllm.batch_generate(
+                        messages, max_new_tokens=FACTCHECK_MAX_NEW_TOKENS
+                    )
+                    for idx, raw_fc in zip(factcheck_indices, raw_checks):
+                        if _apply_city_country_factcheck_result(results[idx], raw_fc):
+                            skip_finer[idx] = True
 
         for i in range(n):
             final_level = next(
