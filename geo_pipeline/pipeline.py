@@ -30,7 +30,7 @@ from config import (
     VERIFY_MAX_NEW_TOKENS, POMDP_MAX_NEW_TOKENS, VERIFY_SUPPORT_FORMAT,
     STRONG_POSTERIOR_THR, STABLE_MARGIN_THR, STABLE_ENTROPY_THR,
     GUARDED_DESCENT_THR, COUNTRY_REPLACE_TOP_THR,
-    COUNTRY_REPLACE_MARGIN_THR, COUNTRY_REPLACE_ATTEMPTS,
+    COUNTRY_REPLACE_MARGIN_THR, COUNTRY_REPLACE_ATTEMPTS, COUNTRY_CUE_ENSEMBLE,
     ENABLE_CONTINENT_LEVEL,
     CONTINENT_REG_MIN_TOP, CONTINENT_REG_STRENGTH, CONTINENT_REG_FLOOR,
     WEB_SEARCH_TOP_THR, WEB_SEARCH_MARGIN_THR, WEB_SEARCH_REQUIRE_ENTITY,
@@ -45,6 +45,32 @@ _FENCED_JSON_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL | re.IGNORECA
 _SEARCH_ENTITY_RE = re.compile(
     r"\b(?:[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+){1,}|[A-Z]{2,}|[A-Z]?\d[A-Z0-9 -]{2,})\b"
 )
+
+_COUNTRY_CUE_PROMPTS = [
+    (
+        "language_script_traffic",
+        "Focus on visible language, scripts, road signs, license plates, lane markings, "
+        "traffic direction, and public transport clues. Return likely countries only.",
+    ),
+    (
+        "climate_landscape_hemisphere",
+        "Focus on climate, vegetation, terrain, sunlight, seasons, hemisphere, and "
+        "rural or coastal landscape clues. Return likely countries only.",
+    ),
+    (
+        "architecture_urban_form",
+        "Focus on architecture, urban layout, road furniture, utilities, building "
+        "materials, and regional infrastructure style. Return likely countries only.",
+    ),
+]
+
+_COUNTRY_FIXED_TASKS = [
+    {"desc": "Check visible language, script, road signs, and storefront text", "bbox": None},
+    {"desc": "Check road layout, traffic direction, lane markings, and license plates", "bbox": None},
+    {"desc": "Check vegetation, climate, terrain, season, and hemisphere cues", "bbox": None},
+    {"desc": "Check architecture, building materials, utilities, and street furniture", "bbox": None},
+    {"desc": "Check landscape context such as coast, mountains, rural setting, or urban density", "bbox": None},
+]
 
 
 def _try_parse_json(text: str):
@@ -202,6 +228,35 @@ def _collect_scores(hypotheses: list, level: str) -> dict[str, float]:
             loc = canon
         scores[loc] = max(scores.get(loc, 0.0), conf)
     return scores
+
+
+def _merge_country_scores(parsed_responses: list[dict | None], top_k: int = 8) -> dict[str, float]:
+    """Merge country hypotheses from multiple focused country prompts."""
+    max_scores: dict[str, float] = {}
+    source_counts: dict[str, int] = {}
+    for parsed in parsed_responses:
+        if not parsed or "hypotheses" not in parsed:
+            continue
+        for country, score in _collect_scores(parsed["hypotheses"], "country").items():
+            max_scores[country] = max(max_scores.get(country, 0.0), score)
+            source_counts[country] = source_counts.get(country, 0) + 1
+    merged = {
+        country: min(score + 0.05 * (source_counts.get(country, 1) - 1), 0.95)
+        for country, score in max_scores.items()
+    }
+    return dict(sorted(merged.items(), key=lambda kv: -kv[1])[:top_k])
+
+
+def _prepend_country_tasks(plan: list[dict]) -> list[dict]:
+    seen = set()
+    out: list[dict] = []
+    for task in [*_COUNTRY_FIXED_TASKS, *plan]:
+        desc = task.get("desc")
+        if not desc or desc in seen:
+            continue
+        seen.add(desc)
+        out.append({"desc": desc, "bbox": task.get("bbox")})
+    return out
 
 
 def _format_top_candidates(posterior: dict[str, float], k: int = 3) -> str:
@@ -530,6 +585,23 @@ def _hypothesize_prompt(image: Image.Image, level: str, context: str = "") -> li
     ]
 
 
+def _country_cue_prompt(image: Image.Image, cue_instruction: str) -> list:
+    return [
+        {
+            "role": "user",
+            "content": [
+                {"type": "image", "image": image},
+                {"type": "text", "text": (
+                    "You are a geolocation expert. Identify likely countries. "
+                    f"{cue_instruction}\n\n"
+                    "Analyze this image and respond with JSON only, no markdown fences:\n"
+                    '{"hypotheses": [{"location": "<country>", "confidence": <0-1>}, ...]}'
+                )},
+            ],
+        }
+    ]
+
+
 def _verify_prompt(image: Image.Image, task: dict, hypotheses: list[str], level: str) -> list:
     hyp_str = ", ".join(hypotheses[:5])
     bbox = task.get("bbox")
@@ -597,6 +669,22 @@ class GeoPipeline:
         if parsed is None or "hypotheses" not in parsed:
             # fallback: single hypothesis with uniform prior
             return {"Unknown": 1.0}, [], response
+
+        if level == "country" and COUNTRY_CUE_ENSEMBLE:
+            cue_responses = [
+                self.mllm.generate(_country_cue_prompt(image, cue_text))
+                for _, cue_text in _COUNTRY_CUE_PROMPTS
+            ]
+            cue_parsed = [_parse_hypothesis_payload(resp) for resp in cue_responses]
+            parsed_sources = [parsed] if parsed and "hypotheses" in parsed else []
+            raw_scores = _merge_country_scores([*parsed_sources, *cue_parsed])
+            prior = _softmax_prior(raw_scores) if raw_scores else {"Unknown": 1.0}
+            plan = _prepend_country_tasks(parsed.get("verification_plan", []))
+            raw_bundle = json.dumps(
+                {"general": response, "cue_responses": cue_responses},
+                ensure_ascii=True,
+            )
+            return prior, plan, raw_bundle
 
         raw_scores = _collect_scores(parsed["hypotheses"], level)
         prior = _softmax_prior(raw_scores) if raw_scores else {"Unknown": 1.0}
@@ -802,12 +890,29 @@ class GeoPipeline:
         n = len(images)
         hyp_messages = [_hypothesize_prompt(images[i], level, contexts[i]) for i in range(n)]
         hyp_responses = self.mllm.batch_generate(hyp_messages)
+        cue_responses_by_cue = []
+        if level == "country" and COUNTRY_CUE_ENSEMBLE:
+            for _, cue_text in _COUNTRY_CUE_PROMPTS:
+                cue_messages = [_country_cue_prompt(images[i], cue_text) for i in range(n)]
+                cue_responses_by_cue.append(self.mllm.batch_generate(cue_messages))
 
         priors = []
         plans = []
-        for resp in hyp_responses:
+        for idx, resp in enumerate(hyp_responses):
             parsed = _parse_hypothesis_payload(resp)
-            if parsed is None or "hypotheses" not in parsed:
+            if level == "country" and COUNTRY_CUE_ENSEMBLE:
+                cue_resps = [cue_batch[idx] for cue_batch in cue_responses_by_cue]
+                cue_parsed = [_parse_hypothesis_payload(cue_resp) for cue_resp in cue_resps]
+                parsed_sources = [parsed] if parsed and "hypotheses" in parsed else []
+                raw_scores = _merge_country_scores([*parsed_sources, *cue_parsed])
+                priors.append(_softmax_prior(raw_scores) if raw_scores else {"Unknown": 1.0})
+                plan = parsed.get("verification_plan", []) if parsed else []
+                plans.append(_prepend_country_tasks(plan))
+                hyp_responses[idx] = json.dumps(
+                    {"general": resp, "cue_responses": cue_resps},
+                    ensure_ascii=True,
+                )
+            elif parsed is None or "hypotheses" not in parsed:
                 priors.append({"Unknown": 1.0})
                 plans.append([])
             else:

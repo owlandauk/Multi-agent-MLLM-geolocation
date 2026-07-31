@@ -29,6 +29,9 @@ GUARDED_DESCENT_THR  = 0.40
 COUNTRY_REPLACE_TOP_THR    = 0.45
 COUNTRY_REPLACE_MARGIN_THR = 0.02
 COUNTRY_REPLACE_ATTEMPTS = 0
+COUNTRY_CUE_ENSEMBLE = os.environ.get("COUNTRY_CUE_ENSEMBLE", "0").lower() in {
+    "1", "true", "yes", "on"
+}
 
 # ── Continent-first country calibration ──────────────────────────────────────
 # The continent stage is a weak prior for country inference. It reduces obvious
