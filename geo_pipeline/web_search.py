@@ -20,7 +20,14 @@ class WebSearchClient:
         self.enabled = os.environ.get("WEB_SEARCH_ENABLED", "0").lower() in {
             "1", "true", "yes", "on"
         }
-        self.api_key = os.environ.get("TAVILY_API_KEY", "")
+        self.api_key = os.environ.get("TAVILY_API_KEY", "").strip()
+        if not self.api_key:
+            key_file = os.environ.get("TAVILY_API_KEY_FILE", "~/.tavily_key")
+            try:
+                with open(os.path.expanduser(key_file), encoding="utf-8") as f:
+                    self.api_key = f.read().strip()
+            except OSError:
+                self.api_key = ""
         self.provider = os.environ.get("WEB_SEARCH_PROVIDER", "tavily").lower()
         if self.enabled and self.provider != "tavily":
             print(f"[WEB] Unsupported WEB_SEARCH_PROVIDER={self.provider}; disabled.")
