@@ -974,6 +974,11 @@ class GeoPipeline:
                     posterior, result.get("continent_posterior", {})
                 )
                 result["country_continent_regularized"] = regularized
+            elif level in ("city", "street"):
+                posterior, conflicts = _filter_child_posterior(
+                    posterior, result.get("country_posterior", {})
+                )
+                result[f"{level}_backtrack_conflicts"] = conflicts
 
             best = max(posterior, key=posterior.get)
             result[level] = best
@@ -1280,6 +1285,12 @@ class GeoPipeline:
                         posterior, results[i].get("continent_posterior", {})
                     )
                     results[i]["country_continent_regularized"] = regularized
+                    posteriors_by_idx[i] = posterior
+                elif level in ("city", "street"):
+                    posterior, conflicts = _filter_child_posterior(
+                        posterior, results[i].get("country_posterior", {})
+                    )
+                    results[i][f"{level}_backtrack_conflicts"] = conflicts
                     posteriors_by_idx[i] = posterior
 
                 best = max(posterior, key=posterior.get)
