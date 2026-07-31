@@ -10,6 +10,7 @@ country names out of pred_city / pred_street strings).
 """
 from __future__ import annotations
 
+import os
 import re
 
 # Country name → continent. Covers the high-prevalence YFCC4K countries plus
@@ -81,6 +82,9 @@ _ALIAS_PATTERNS = {
     alias: re.compile(rf"(?<![a-z0-9]){re.escape(alias)}(?![a-z0-9])")
     for alias in _ALIASES_BY_LENGTH
 }
+_STRICT_ALIAS_MATCH = os.environ.get("STRICT_COUNTRY_ALIAS_MATCH", "0").lower() in {
+    "1", "true", "yes", "on"
+}
 
 
 # Multiple aliases in COUNTRY_TO_CONTINENT refer to the same country
@@ -137,10 +141,12 @@ def canonicalize_country(raw: str) -> str | None:
         if tail in COUNTRY_TO_CONTINENT:
             return _canon(tail)
 
-    # Longest-match scan with token boundaries. This avoids false positives like
-    # "museum" -> "us" and "Roman" -> "Oman" while still matching country
-    # names embedded in longer labels.
     for alias in _ALIASES_BY_LENGTH:
-        if _ALIAS_PATTERNS[alias].search(low):
+        matched = (
+            _ALIAS_PATTERNS[alias].search(low)
+            if _STRICT_ALIAS_MATCH
+            else alias in low
+        )
+        if matched:
             return _canon(alias)
     return None
