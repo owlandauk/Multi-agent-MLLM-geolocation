@@ -268,13 +268,26 @@ def _posterior_web_trigger(posterior: dict[str, float], visual_delta: float) -> 
 
 
 def _has_searchable_web_entity(evidence: list[str]) -> bool:
-    """Only search when visual evidence contains text, names, or code-like clues."""
+    """Only search when visual evidence contains a concrete searchable clue."""
     if not WEB_SEARCH_REQUIRE_ENTITY:
         return True
-    recent = " ".join(evidence[-3:])
-    if not recent.strip():
+    recent = " ".join(_clean_search_clue(item) for item in evidence[-3:])
+    low = recent.lower()
+    if not low.strip():
         return False
-    if any(marker in recent.lower() for marker in ("sign", "text", "logo", "license", "plate")):
+    negative_markers = (
+        "no visible landmark", "no recognizable landmark", "no specific",
+        "no visible signs", "no visible text", "not available", "placeholder",
+        "does not provide", "cannot provide", "generic", "common sight",
+    )
+    if any(marker in low for marker in negative_markers):
+        return False
+    concrete_markers = (
+        "sign", "text", "logo", "license", "plate", "reads", "named",
+        "landmark", "bridge", "cathedral", "temple", "station", "museum",
+        "monument", "statue", "storefront", "street sign",
+    )
+    if any(marker in low for marker in concrete_markers):
         return True
     return bool(_SEARCH_ENTITY_RE.search(recent))
 
