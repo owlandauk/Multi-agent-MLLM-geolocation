@@ -28,7 +28,6 @@ DST_CONFLICT_THR = 0.5   # K > this → treat as high-conflict, apply cautious r
 POMDP_MAX_STEPS = 8      # full experiments
 POMDP_GAMMA     = 0.95   # discount factor (used if computing cumulative reward)
 POMDP_ACTION_COST = 0.02 # lambda cost for one verification action in the reward prompt
-POMDP_AMBIGUITY_COST = 0.08 # eta penalty for generic/non-geographic verification tasks
 
 # ── Evaluation thresholds (km) ─────────────────────────────────────────────────
 EVAL_THRESHOLDS = [1, 25, 200, 750, 2500]
