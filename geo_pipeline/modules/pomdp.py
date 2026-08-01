@@ -8,8 +8,9 @@ highest information gain given the current belief state.
 
 State  b_t  = current posterior distribution over hypotheses (belief)
 Action a_t  = which verification task v_i to execute next
-Reward r_t  = E_o[H(b_t) - H(b_{t+1})] - lambda*C(a_t), where
+Reward r_t  = E_o[H(b_t) - H(b_{t+1})] - lambda*C(a_t) - eta*A(a_t), where
               b_{t+1}(l) ∝ b_t(l)P(o | l, a_t)
+              A(a_t) penalizes generic, non-geographic evidence.
 Policy π    = LLM-based: the model is shown the current belief, pending tasks,
               and reward equation, then asked to pick the highest-reward action.
 
@@ -21,7 +22,12 @@ For offline / no-search setting (CVHCI servers, no internet):
 import json
 import re
 from models.mllm_client import MLLMClient
-from config import POMDP_ACTION_COST, POMDP_MAX_STEPS, POMDP_MAX_NEW_TOKENS
+from config import (
+    POMDP_ACTION_COST,
+    POMDP_AMBIGUITY_COST,
+    POMDP_MAX_STEPS,
+    POMDP_MAX_NEW_TOKENS,
+)
 
 
 _CHOICE_RE = re.compile(r'"?task_index"?\s*:\s*(\d+)', re.IGNORECASE)
@@ -49,10 +55,16 @@ class POMDPModule:
             "  For a possible observation o, update\n"
             "    b_{t+1}(l)=b_t(l)P(o | l,a_t) / sum_{l'} b_t(l')P(o | l',a_t).\n"
             "  Reward:\n"
-            f"    R(b_t,a_t)=E_o[H(b_t)-H(b_{{t+1}})] - lambda*C(a_t), lambda={POMDP_ACTION_COST:.3f}.\n"
+            f"    R(b_t,a_t)=E_o[H(b_t)-H(b_{{t+1}})] - lambda*C(a_t) - eta*A(a_t), "
+            f"lambda={POMDP_ACTION_COST:.3f}, eta={POMDP_AMBIGUITY_COST:.3f}.\n"
             "    H(b)=-sum_l b(l)log b(l), and C(a_t)=1 for one verification call.\n"
-            "Choose the task with the largest expected reward: high expected entropy reduction, "
-            "strong ability to separate top hypotheses, and low chance of generic/neutral evidence."
+            "    A(a_t)=1 if the task is likely to produce generic/non-geographic evidence "
+            "(people, event type, objects, flowers, indoor decor) and 0 if it targets "
+            "geographically diagnostic cues (language/script, architecture, road signs, "
+            "vehicles, climate, landmarks, or country/continent-specific context).\n"
+            "Choose the task with the largest expected reward. Prefer evidence that separates "
+            "countries or continents before fine local details; do not choose a task merely "
+            "because it is visually salient if it is geographically generic."
         )
 
     def _make_policy_prompt(
