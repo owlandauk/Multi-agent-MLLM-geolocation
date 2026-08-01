@@ -10,10 +10,10 @@ YFCC4K_IMG_DIR  = os.environ.get("YFCC4K_IMG_DIR",  "/cvhci/temp/szuo/yfcc4k/yfc
 YFCC4K_GPS_CSV  = os.environ.get("YFCC4K_GPS_CSV",  "/cvhci/temp/szuo/yfcc4k/yfcc4k_gps.csv")
 RESULTS_DIR     = os.environ.get("RESULTS_DIR",     "/cvhci/temp/szuo/geo_results")
 
-# ── GeoBayes hyperparams (kept identical to paper) ────────────────────────────
-PRIOR_TEMP      = 1.5    # T  in Eq.5
-PRIOR_CUTOFF    = 0.6    # τp in Eq.5
-TRANSITION_THR  = 0.55   # τ_transition (lowered from 0.7: coarse levels rarely hit 0.7 with many hypotheses)
+# ── GeoBayes hyperparams (defaults kept stable; env overrides for ablations) ──
+PRIOR_TEMP      = float(os.environ.get("PRIOR_TEMP", "1.5"))    # T  in Eq.5
+PRIOR_CUTOFF    = float(os.environ.get("PRIOR_CUTOFF", "0.6"))  # τp in Eq.5
+TRANSITION_THR  = float(os.environ.get("TRANSITION_THR", "0.55"))
 ENHANCE_THR     = 0.05   # τ_enhance  (ΔP threshold)
 BETA            = 0.693  # ln2
 
