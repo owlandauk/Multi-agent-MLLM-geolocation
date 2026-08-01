@@ -35,6 +35,8 @@ from config import (
     COUNTRY_GEOREASONER_SEED, GEOREASONER_COUNTRY_BOOST,
     GEOREASONER_REQUIRE_DIRECT_CLUE,
     CITY_COUNTRY_FACTCHECK, CITY_COUNTRY_FACTCHECK_MIN_COUNTRY_TOP,
+    CHILD_BACKTRACK_PROMOTE, CHILD_BACKTRACK_MAX_COUNTRY_TOP,
+    CHILD_BACKTRACK_MIN_CHILD_TOP,
     ENABLE_CONTINENT_LEVEL,
     CONTINENT_REG_MIN_TOP, CONTINENT_REG_STRENGTH, CONTINENT_REG_FLOOR,
     WEB_SEARCH_TOP_THR, WEB_SEARCH_MARGIN_THR, WEB_SEARCH_REQUIRE_ENTITY,
@@ -495,6 +497,42 @@ def _filter_child_posterior(
         return posterior, conflicts
     total = sum(filtered.values())
     return ({k: v / total for k, v in filtered.items()} if total > 0 else filtered), conflicts
+
+
+def _maybe_promote_country_from_child(
+    result: dict,
+    level: str,
+    child_posterior: dict[str, float],
+) -> bool:
+    """Backtrack a weak parent country to a confident child-embedded country."""
+    if not CHILD_BACKTRACK_PROMOTE or level not in ("city", "street"):
+        return False
+
+    parent_country = canonicalize_country(result.get("country") or "")
+    child_country = canonicalize_country(result.get(level) or "")
+    if not parent_country or not child_country or child_country == parent_country:
+        return False
+
+    country_posterior = result.get("country_posterior") or {}
+    country_stats = _posterior_stats(country_posterior)
+    if country_stats["top"] > CHILD_BACKTRACK_MAX_COUNTRY_TOP:
+        return False
+    if child_country not in _country_candidate_set(country_posterior):
+        return False
+    if _posterior_stats(child_posterior)["top"] < CHILD_BACKTRACK_MIN_CHILD_TOP:
+        return False
+
+    if level == "street":
+        city_country = canonicalize_country(result.get("city") or "")
+        if city_country and city_country != child_country:
+            return False
+
+    result["country_before_child_backtrack"] = result.get("country")
+    result["country_child_backtrack_level"] = level
+    result["country_child_backtrack_country"] = child_country
+    result["country"] = child_country
+    result["country_child_backtracked"] = True
+    return True
 
 
 def _text_prompt(text: str) -> list:
@@ -1071,6 +1109,9 @@ class GeoPipeline:
             result[f"{level}_stable"] = _stable_for_descent(posterior)
             result[f"{level}_steps"] = level_steps
 
+            if level in ("city", "street"):
+                _maybe_promote_country_from_child(result, level, posterior)
+
             if level == "city" and _should_factcheck_city_country(result):
                 raw_fc = self.mllm.generate(
                     _city_country_factcheck_prompt(result["city"], result["country"]),
@@ -1395,6 +1436,9 @@ class GeoPipeline:
 
                 if level == "country":
                     results[i]["country_visual_delta"] = visual_delta_by_idx.get(i, 0.0)
+
+                if level in ("city", "street"):
+                    _maybe_promote_country_from_child(results[i], level, posterior)
 
                 if level == "country" and (block_reason := _descent_block_reason(posterior)):
                     # Even guarded descent would be too noisy. Avoid propagating a

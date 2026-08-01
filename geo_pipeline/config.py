@@ -48,6 +48,15 @@ CITY_COUNTRY_FACTCHECK = os.environ.get("CITY_COUNTRY_FACTCHECK", "0").lower() i
 CITY_COUNTRY_FACTCHECK_MIN_COUNTRY_TOP = float(
     os.environ.get("CITY_COUNTRY_FACTCHECK_MIN_COUNTRY_TOP", "0.55")
 )
+CHILD_BACKTRACK_PROMOTE = os.environ.get("CHILD_BACKTRACK_PROMOTE", "0").lower() in {
+    "1", "true", "yes", "on"
+}
+CHILD_BACKTRACK_MAX_COUNTRY_TOP = float(
+    os.environ.get("CHILD_BACKTRACK_MAX_COUNTRY_TOP", "0.55")
+)
+CHILD_BACKTRACK_MIN_CHILD_TOP = float(
+    os.environ.get("CHILD_BACKTRACK_MIN_CHILD_TOP", "0.50")
+)
 
 # ── Continent-first country calibration ──────────────────────────────────────
 # The continent stage is a weak prior for country inference. It reduces obvious

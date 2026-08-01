@@ -148,6 +148,7 @@ def analyze(records: list[dict]) -> dict:
     policy_counts = Counter(r.get("pomdp_policy") or "missing" for r in records)
     conflicts = [r for r in records if _country_conflicts(r)]
     country_replaced = sum(1 for r in records if r.get("country_replaced"))
+    country_child_backtracked = sum(1 for r in records if r.get("country_child_backtracked"))
     country_web_enhanced = sum(1 for r in records if r.get("country_web_enhanced"))
     city_web_enhanced = sum(1 for r in records if r.get("city_web_enhanced"))
     street_web_enhanced = sum(1 for r in records if r.get("street_web_enhanced"))
@@ -264,6 +265,7 @@ def analyze(records: list[dict]) -> dict:
         "country_consistency": dict(consistency_counts),
         "country_child_conflict_rate": round(100.0 * len(conflicts) / total, 2) if total else 0.0,
         "country_replaced_rate": round(100.0 * country_replaced / total, 2) if total else 0.0,
+        "country_child_backtracked_rate": round(100.0 * country_child_backtracked / total, 2) if total else 0.0,
         "country_web_enhanced_rate": round(100.0 * country_web_enhanced / total, 2) if total else 0.0,
         "city_web_enhanced_rate": round(100.0 * city_web_enhanced / total, 2) if total else 0.0,
         "street_web_enhanced_rate": round(100.0 * street_web_enhanced / total, 2) if total else 0.0,
@@ -328,6 +330,9 @@ def analyze(records: list[dict]) -> dict:
                 records, lambda r: bool(r.get("city_country_factcheck_rejected"))
             ),
             "country_replaced": _bucket_accuracy(records, lambda r: bool(r.get("country_replaced"))),
+            "country_child_backtracked": _bucket_accuracy(
+                records, lambda r: bool(r.get("country_child_backtracked"))
+            ),
             "country_descent_blocked_reason": _bucket_accuracy(
                 records,
                 lambda r: r.get("country_descent_blocked_reason") or "not_blocked",
@@ -403,6 +408,8 @@ def _print_report(report: dict) -> None:
         )
     print(f"Country-child conflict rate: {report['country_child_conflict_rate']:.2f}%")
     print(f"Country replace rate: {report['country_replaced_rate']:.2f}%")
+    if report.get("country_child_backtracked_rate"):
+        print(f"Country child backtrack promote rate: {report['country_child_backtracked_rate']:.2f}%")
     web_rates = report.get("web_enhanced_rate") or {
         "country": report.get("country_web_enhanced_rate", 0.0),
         "city": report.get("city_web_enhanced_rate", 0.0),
@@ -510,6 +517,7 @@ def _print_report(report: dict) -> None:
             "city_web_enhanced",
             "street_web_enhanced",
             "city_country_factcheck_rejected",
+            "country_child_backtracked",
             "country_descent_blocked_reason",
         ):
             bucket = buckets.get(bucket_name, {})
