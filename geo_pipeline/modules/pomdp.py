@@ -6,11 +6,12 @@ GeoBayes selects the next verification task by iterating through V_t in order
 policy that selects the action (verification task) expected to yield the
 highest information gain given the current belief state.
 
-State  s_t  = current posterior distribution over hypotheses (belief)
+State  b_t  = current posterior distribution over hypotheses (belief)
 Action a_t  = which verification task v_i to execute next
-Reward r_t  = ΔP_t = change in posterior entropy after executing the action
-Policy π    = LLM-based: the model is shown the current belief and pending tasks
-              and asked to pick the most informative one.
+Reward r_t  = E_o[H(b_t) - H(b_{t+1})] - lambda*C(a_t), where
+              b_{t+1}(l) ∝ b_t(l)P(o | l, a_t)
+Policy π    = LLM-based: the model is shown the current belief, pending tasks,
+              and reward equation, then asked to pick the highest-reward action.
 
 For offline / no-search setting (CVHCI servers, no internet):
   - The model itself acts as the oracle for expected information gain.
@@ -20,7 +21,7 @@ For offline / no-search setting (CVHCI servers, no internet):
 import json
 import re
 from models.mllm_client import MLLMClient
-from config import POMDP_MAX_STEPS, POMDP_MAX_NEW_TOKENS
+from config import POMDP_ACTION_COST, POMDP_MAX_STEPS, POMDP_MAX_NEW_TOKENS
 
 
 _CHOICE_RE = re.compile(r'"?task_index"?\s*:\s*(\d+)', re.IGNORECASE)
@@ -39,6 +40,20 @@ class POMDPModule:
     def _belief_summary(self, posterior: dict[str, float]) -> str:
         items = sorted(posterior.items(), key=lambda x: -x[1])
         return ", ".join(f"{h}: {p:.3f}" for h, p in items[:5])
+
+    def _reward_equation(self) -> str:
+        return (
+            "Use this POMDP decision rule:\n"
+            "  Belief state: b_t(l)=P(L=l | e_1:t).\n"
+            "  Candidate action: a_t is one pending verification task.\n"
+            "  For a possible observation o, update\n"
+            "    b_{t+1}(l)=b_t(l)P(o | l,a_t) / sum_{l'} b_t(l')P(o | l',a_t).\n"
+            "  Reward:\n"
+            f"    R(b_t,a_t)=E_o[H(b_t)-H(b_{{t+1}})] - lambda*C(a_t), lambda={POMDP_ACTION_COST:.3f}.\n"
+            "    H(b)=-sum_l b(l)log b(l), and C(a_t)=1 for one verification call.\n"
+            "Choose the task with the largest expected reward: high expected entropy reduction, "
+            "strong ability to separate top hypotheses, and low chance of generic/neutral evidence."
+        )
 
     def _make_policy_prompt(
         self,
@@ -59,9 +74,7 @@ class POMDPModule:
                         f"You are a geolocation agent at reasoning level: {level} (step {step}).\n\n"
                         f"Current belief over locations:\n  {self._belief_summary(posterior)}\n\n"
                         f"Pending verification tasks:\n{task_list}\n\n"
-                        "Select the single task that would most reduce uncertainty — i.e., "
-                        "the task most likely to produce evidence that strongly supports or "
-                        "contradicts the current top hypotheses.\n\n"
+                        f"{self._reward_equation()}\n\n"
                         'Respond with JSON only: {"task_index": <int>, "reason": "<short reason>"}'
                     )},
                 ],
