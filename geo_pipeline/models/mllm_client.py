@@ -31,10 +31,16 @@ def _vllm_mm_processor_kwargs() -> dict | None:
     kwargs = {}
     use_fast = _env_flag("VLLM_USE_FAST_PROCESSOR")
     backend = os.environ.get("VLLM_MM_PROCESSOR_BACKEND")
+    max_pixels = os.environ.get("VLLM_MAX_PIXELS")
+    min_pixels = os.environ.get("VLLM_MIN_PIXELS")
     if use_fast is not None:
         kwargs["use_fast"] = use_fast
     if backend:
         kwargs["backend"] = backend
+    if max_pixels:
+        kwargs["max_pixels"] = int(max_pixels)
+    if min_pixels:
+        kwargs["min_pixels"] = int(min_pixels)
     return kwargs or None
 
 
