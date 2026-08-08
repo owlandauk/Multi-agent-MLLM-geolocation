@@ -19,6 +19,25 @@ from config import MAX_NEW_TOKENS, SL_TEMPERATURE
 BACKEND = os.environ.get("MLLM_BACKEND", "dashscope")
 
 
+def _env_flag(name: str) -> bool | None:
+    value = os.environ.get(name)
+    if value is None:
+        return None
+    return value.lower() not in {"0", "false", "no", "off"}
+
+
+def _vllm_mm_processor_kwargs() -> dict | None:
+    """Optional vLLM image-processor controls for runtime ablations."""
+    kwargs = {}
+    use_fast = _env_flag("VLLM_USE_FAST_PROCESSOR")
+    backend = os.environ.get("VLLM_MM_PROCESSOR_BACKEND")
+    if use_fast is not None:
+        kwargs["use_fast"] = use_fast
+    if backend:
+        kwargs["backend"] = backend
+    return kwargs or None
+
+
 def _image_to_base64(image: Image.Image) -> str:
     buf = io.BytesIO()
     image.save(buf, format="JPEG")
@@ -281,12 +300,15 @@ class _VLLMClient:
 
         import os
         gpu_mem_util = float(os.environ.get("VLLM_GPU_MEMORY_UTILIZATION", "0.85"))
+        mm_processor_kwargs = _vllm_mm_processor_kwargs()
 
         print(f"[MLLM] Loading vLLM engine for {model_path} (TP={tensor_parallel_size}, mem_util={gpu_mem_util}) ...")
+        if mm_processor_kwargs:
+            print(f"[MLLM] vLLM mm_processor_kwargs={mm_processor_kwargs}")
         # gpu_memory_utilization default 0.85 leaves slack on 11GB cards so
         # tokenizer + KV cache spikes don't OOM. Override via env var if a
         # neighbour process is already holding memory on a target GPU.
-        self.llm = LLM(
+        llm_kwargs = dict(
             model=model_path,
             tensor_parallel_size=tensor_parallel_size,
             dtype="float16",
@@ -296,6 +318,9 @@ class _VLLMClient:
             trust_remote_code=True,
             enforce_eager=False,
         )
+        if mm_processor_kwargs is not None:
+            llm_kwargs["mm_processor_kwargs"] = mm_processor_kwargs
+        self.llm = LLM(**llm_kwargs)
         # Qwen2.5-VL chat template lives on the tokenizer
         self.tokenizer = self.llm.get_tokenizer()
         print("[MLLM] vLLM engine ready.")
