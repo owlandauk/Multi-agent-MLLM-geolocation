@@ -26,6 +26,19 @@
 - Next time a retrieval prior conflicts with visual evidence, prefer a soft prior plus low-confidence fallback over hard anchoring inside the hierarchy.
 - Signal to recognize: `country_child_conflict_rate` jumps above roughly 25%, but `retrieval_country_fallback` rows have higher continent recall than the original low-confidence geocode.
 
+## Fallback Thresholds Trade Continent for City
+
+### Context
+- A 1500-record offline sweep comparing `w015` with and without retrieval-country fallback showed that fallback rows improved continent more than country, but never improved city/street precision.
+- On that sweep, `max_country_top=0.55` gave the best continent score, while `max_country_top=0.50` preserved more city/region accuracy and kept country accuracy similar.
+
+### Root Cause / Core Insight
+- Retrieval fallback is a coarse geocode repair, not a child-level localization repair. It helps when the original prediction is on the wrong continent, but it overwrites some otherwise-good city/street geocodes with country centers.
+
+### The Pattern
+- Next time the target metric is continent, use a wider fallback gate around `country_top < 0.55`; when city/region matter more, test `country_top < 0.50` before full runs.
+- Signal to recognize: fallback improves many `2500km` misses but causes `City <25km` to drop, especially in the `country_top=0.50-0.55` bucket.
+
 ## Gates Need Enough Samples and Same-Hardware Confirmation
 
 ### Context
@@ -38,4 +51,3 @@
 ### The Pattern
 - Next time, use 1500 as the decision gate, then run full only when both country and continent pass the threshold on the same code path.
 - Signal to recognize: a 500 run looks promising but full later regresses, or a slow multi-GPU run spends more time on communication than useful inference.
-
