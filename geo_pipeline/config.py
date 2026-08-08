@@ -58,6 +58,37 @@ CHILD_BACKTRACK_MIN_CHILD_TOP = float(
     os.environ.get("CHILD_BACKTRACK_MIN_CHILD_TOP", "0.50")
 )
 
+# ── Retrieval / GeoCLIP prior ────────────────────────────────────────────────
+# Optional external geo prior. A retrieval backend can write top-k similar-image
+# country evidence to JSON/JSONL/CSV; the pipeline softly mixes it into the
+# country prior before normal SL/DST/POMDP verification.
+RETRIEVAL_PRIOR_ENABLED = os.environ.get("RETRIEVAL_PRIOR_ENABLED", "0").lower() in {
+    "1", "true", "yes", "on"
+}
+RETRIEVAL_PRIOR_PATH = os.environ.get("RETRIEVAL_PRIOR_PATH", "")
+RETRIEVAL_PRIOR_WEIGHT = float(os.environ.get("RETRIEVAL_PRIOR_WEIGHT", "0.25"))
+RETRIEVAL_PRIOR_ADAPTIVE = os.environ.get("RETRIEVAL_PRIOR_ADAPTIVE", "0").lower() in {
+    "1", "true", "yes", "on"
+}
+RETRIEVAL_PRIOR_SAME_CONTINENT_WEIGHT = float(
+    os.environ.get("RETRIEVAL_PRIOR_SAME_CONTINENT_WEIGHT", "0.10")
+)
+RETRIEVAL_PRIOR_CROSS_CONTINENT_WEIGHT = float(
+    os.environ.get("RETRIEVAL_PRIOR_CROSS_CONTINENT_WEIGHT", "0.05")
+)
+RETRIEVAL_COUNTRY_ANCHOR_ENABLED = os.environ.get(
+    "RETRIEVAL_COUNTRY_ANCHOR_ENABLED", "0"
+).lower() in {"1", "true", "yes", "on"}
+RETRIEVAL_COUNTRY_ANCHOR_MAX_COUNTRY_TOP = float(
+    os.environ.get("RETRIEVAL_COUNTRY_ANCHOR_MAX_COUNTRY_TOP", "0.55")
+)
+RETRIEVAL_COUNTRY_ANCHOR_MIN_PRIOR_TOP = float(
+    os.environ.get("RETRIEVAL_COUNTRY_ANCHOR_MIN_PRIOR_TOP", "0.15")
+)
+RETRIEVAL_COUNTRY_ANCHOR_WEIGHT = float(
+    os.environ.get("RETRIEVAL_COUNTRY_ANCHOR_WEIGHT", "1.0")
+)
+
 # ── Continent-first country calibration ──────────────────────────────────────
 # The continent stage is a weak prior for country inference. It reduces obvious
 # cross-continent country defaults without hard-blocking North America or child
@@ -84,6 +115,17 @@ WEB_SEARCH_LEVELS = tuple(
     for level in os.environ.get("WEB_SEARCH_LEVELS", "country,city,street").split(",")
     if level.strip()
 )
+WEB_SEARCH_UPDATE_MODE = os.environ.get("WEB_SEARCH_UPDATE_MODE", "verify").lower()
+WEB_SEARCH_VERIFY_MAX_NEW_TOKENS = int(os.environ.get("WEB_SEARCH_VERIFY_MAX_NEW_TOKENS", "160"))
+
+# Optional GeoBayes-style ImageSearch enhancement. When enabled, Google Vision
+# Web Detection extracts concrete web entities from the image first; Tavily is
+# kept as a fallback for concrete text clues when image search is uninformative.
+IMAGE_SEARCH_MAX_ENTITIES = int(os.environ.get("IMAGE_SEARCH_MAX_ENTITIES", "5"))
+IMAGE_SEARCH_TIMEOUT = int(os.environ.get("IMAGE_SEARCH_TIMEOUT", "15"))
+IMAGE_SEARCH_STRICT_TEXT_QUERY = os.environ.get(
+    "IMAGE_SEARCH_STRICT_TEXT_QUERY", "1"
+).lower() not in {"0", "false", "no", "off"}
 
 # ── SL (single-source uncertainty) ────────────────────────────────────────────
 SL_N_SAMPLES    = 5      # samples per hypothesis for uncertainty estimation in SLModule

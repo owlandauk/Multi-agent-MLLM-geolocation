@@ -25,6 +25,13 @@ from modules.dst import DSTModule
 from modules.pomdp import POMDPModule
 from country_aliases import canonicalize_country, continent_of
 from web_search import WebSearchClient, format_search_evidence
+from image_search import (
+    ImageSearchClient,
+    format_image_search_evidence,
+    image_evidence_to_text_query,
+    is_location_worthy_image_evidence,
+)
+from retrieval_prior import RetrievalPriorClient
 from config import (
     PRIOR_TEMP, PRIOR_CUTOFF, TRANSITION_THR, ENHANCE_THR,
     VERIFY_MAX_NEW_TOKENS, POMDP_MAX_NEW_TOKENS, VERIFY_SUPPORT_FORMAT,
@@ -37,10 +44,16 @@ from config import (
     CITY_COUNTRY_FACTCHECK, CITY_COUNTRY_FACTCHECK_MIN_COUNTRY_TOP,
     CHILD_BACKTRACK_PROMOTE, CHILD_BACKTRACK_MAX_COUNTRY_TOP,
     CHILD_BACKTRACK_MIN_CHILD_TOP,
+    RETRIEVAL_PRIOR_ENABLED, RETRIEVAL_PRIOR_PATH, RETRIEVAL_PRIOR_WEIGHT,
+    RETRIEVAL_PRIOR_ADAPTIVE, RETRIEVAL_PRIOR_SAME_CONTINENT_WEIGHT,
+    RETRIEVAL_PRIOR_CROSS_CONTINENT_WEIGHT,
+    RETRIEVAL_COUNTRY_ANCHOR_ENABLED, RETRIEVAL_COUNTRY_ANCHOR_MAX_COUNTRY_TOP,
+    RETRIEVAL_COUNTRY_ANCHOR_MIN_PRIOR_TOP, RETRIEVAL_COUNTRY_ANCHOR_WEIGHT,
     ENABLE_CONTINENT_LEVEL,
     CONTINENT_REG_MIN_TOP, CONTINENT_REG_STRENGTH, CONTINENT_REG_FLOOR,
     WEB_SEARCH_TOP_THR, WEB_SEARCH_MARGIN_THR, WEB_SEARCH_REQUIRE_ENTITY,
-    WEB_SEARCH_LEVELS,
+    WEB_SEARCH_LEVELS, WEB_SEARCH_UPDATE_MODE, WEB_SEARCH_VERIFY_MAX_NEW_TOKENS,
+    IMAGE_SEARCH_STRICT_TEXT_QUERY,
     FACTCHECK_MAX_NEW_TOKENS,
 )
 
@@ -206,6 +219,80 @@ def _regularize_country_by_continent(
     return _renormalize_posterior(adjusted), changed
 
 
+def _canonical_country_scores(scores: dict[str, float]) -> dict[str, float]:
+    canonical_scores: dict[str, float] = {}
+    for country, score in (scores or {}).items():
+        canonical = canonicalize_country(country)
+        if not canonical:
+            continue
+        try:
+            value = float(score)
+        except (TypeError, ValueError):
+            continue
+        canonical_scores[canonical] = canonical_scores.get(canonical, 0.0) + max(0.0, value)
+    return canonical_scores
+
+
+def _canonical_country_posterior(scores: dict[str, float]) -> dict[str, float]:
+    canonical_scores = _canonical_country_scores(scores)
+    return _renormalize_posterior(canonical_scores)
+
+
+def _top_country_score(scores: dict[str, float]) -> tuple[str | None, float]:
+    canonical_scores = _canonical_country_scores(scores)
+    if not canonical_scores:
+        return None, 0.0
+    country = max(canonical_scores, key=canonical_scores.get)
+    return country, float(canonical_scores[country])
+
+
+def _retrieval_country_anchor_posterior(
+    posterior: dict[str, float],
+    retrieval_prior: dict[str, float],
+) -> tuple[dict[str, float], dict]:
+    """Use retrieval as the country belief only when visual posterior is weak."""
+    country_stats = _posterior_stats(posterior)
+    diag = {"applied": False, "country_top": country_stats["top"]}
+    if not RETRIEVAL_COUNTRY_ANCHOR_ENABLED:
+        return posterior, diag
+    if country_stats["top"] >= RETRIEVAL_COUNTRY_ANCHOR_MAX_COUNTRY_TOP:
+        return posterior, diag
+
+    retrieval_prior = _canonical_country_posterior(retrieval_prior)
+    retrieval_country, prior_top = _top_country_score(retrieval_prior)
+    diag["prior_top"] = prior_top
+    diag["country"] = retrieval_country
+    if not retrieval_country or prior_top < RETRIEVAL_COUNTRY_ANCHOR_MIN_PRIOR_TOP:
+        return posterior, diag
+
+    weight = min(max(float(RETRIEVAL_COUNTRY_ANCHOR_WEIGHT), 0.0), 1.0)
+    if weight >= 0.999:
+        anchored = dict(retrieval_prior)
+    else:
+        posterior = _canonical_country_posterior(posterior)
+        keys = set(posterior) | set(retrieval_prior)
+        anchored = {
+            key: (1.0 - weight) * posterior.get(key, 0.0) + weight * retrieval_prior.get(key, 0.0)
+            for key in keys
+        }
+        anchored = _renormalize_posterior(anchored)
+
+    if anchored and max(anchored, key=anchored.get) != retrieval_country:
+        anchored[retrieval_country] = max(anchored.values(), default=0.0) + 1e-6
+        anchored = _renormalize_posterior(anchored)
+
+    diag.update(
+        {
+            "applied": True,
+            "weight": weight,
+            "previous_top_country": max(posterior, key=posterior.get) if posterior else None,
+            "previous_posterior": _topk_posterior(posterior),
+            "anchored_posterior": _topk_posterior(anchored),
+        }
+    )
+    return anchored or posterior, diag
+
+
 def _collect_scores(hypotheses: list, level: str) -> dict[str, float]:
     """Collect {location: confidence} from parsed hypotheses.
 
@@ -269,6 +356,13 @@ def _prepend_country_tasks(plan: list[dict]) -> list[dict]:
 def _format_top_candidates(posterior: dict[str, float], k: int = 3) -> str:
     items = sorted((posterior or {}).items(), key=lambda x: -x[1])[:k]
     return ", ".join(f"{loc} ({prob:.2f})" for loc, prob in items)
+
+
+def _topk_posterior(posterior: dict[str, float], k: int = 5) -> dict[str, float]:
+    return {
+        key: round(float(value), 4)
+        for key, value in sorted((posterior or {}).items(), key=lambda x: -x[1])[:k]
+    }
 
 
 def _posterior_stats(posterior: dict[str, float]) -> dict[str, float]:
@@ -359,6 +453,7 @@ def _should_web_enhance_level(
     posterior: dict[str, float],
     visual_delta: float,
     search_evidence: list[str],
+    image_search_enabled: bool = False,
 ) -> bool:
     """GeoBayes-style enhance gate for country/city/street reasoning.
 
@@ -369,6 +464,8 @@ def _should_web_enhance_level(
         return False
     if not _posterior_web_trigger(posterior, visual_delta):
         return False
+    if image_search_enabled and IMAGE_SEARCH_STRICT_TEXT_QUERY:
+        return True
     return _has_searchable_web_entity(search_evidence)
 
 
@@ -450,6 +547,29 @@ def _web_enhance_context(
         "Use the search snippets only as supporting evidence; visual evidence still has priority. "
         "Avoid inventing a location not supported by either the image or snippets. "
         f"Search snippets:\n{evidence}"
+    )
+
+
+def _web_verify_prompt(
+    level: str,
+    posterior: dict[str, float],
+    query: str,
+    evidence: str,
+    parent_context: str = "",
+) -> list:
+    hyp_lines = "\n".join(f"  - {hyp}" for hyp in list(posterior.keys())[:5])
+    return _text_prompt(
+        f"External search evidence was retrieved for a {level}-level geolocation update.\n"
+        f"External search evidence:\n{evidence}\n\n"
+        "Candidate hypotheses:\n"
+        f"{hyp_lines}\n\n"
+        "Step 1 - State only what the external evidence says about location.\n"
+        "Step 2 - For each candidate above, mark S if the evidence supports it, "
+        "C if it contradicts it, or N if it is neutral/insufficient. "
+        "Do not introduce a new candidate here.\n\n"
+        "Respond exactly in this format:\n"
+        "Observation: <what the search evidence says>\n"
+        "Support: <hypothesis_1>=S/C/N; <hypothesis_2>=S/C/N; ..."
     )
 
 
@@ -861,6 +981,32 @@ class GeoPipeline:
         self.dst   = DSTModule()
         self.pomdp = POMDPModule(mllm)
         self.web_search = WebSearchClient()
+        self.image_search = ImageSearchClient()
+        self.retrieval_prior = RetrievalPriorClient(
+            enabled=RETRIEVAL_PRIOR_ENABLED,
+            path=RETRIEVAL_PRIOR_PATH or None,
+            weight=RETRIEVAL_PRIOR_WEIGHT,
+            adaptive=RETRIEVAL_PRIOR_ADAPTIVE,
+            same_continent_weight=RETRIEVAL_PRIOR_SAME_CONTINENT_WEIGHT,
+            cross_continent_weight=RETRIEVAL_PRIOR_CROSS_CONTINENT_WEIGHT,
+        )
+
+    def _apply_country_retrieval_prior(
+        self,
+        image: Image.Image,
+        prior: dict[str, float],
+    ) -> tuple[dict[str, float], dict]:
+        return self.retrieval_prior.blend_for_image(image, prior)
+
+    def _record_retrieval_diag(self, result: dict, diag: dict) -> None:
+        result["country_retrieval_enhanced"] = bool(diag.get("applied"))
+        if not diag.get("applied"):
+            return
+        result["country_retrieval_weight"] = diag.get("weight")
+        result["country_retrieval_effective_weight"] = diag.get("effective_weight")
+        result["country_retrieval_relation"] = diag.get("relation")
+        result["country_retrieval_prior"] = _topk_posterior(diag.get("retrieval_prior", {}))
+        result["country_prior_before_retrieval"] = _topk_posterior(diag.get("visual_prior", {}))
 
     def _hypothesize(self, image: Image.Image, level: str, context: str = "") -> tuple[dict, list, str]:
         """Returns (prior_dict, verification_plan_list, raw_response)."""
@@ -995,6 +1141,31 @@ class GeoPipeline:
 
         return posterior, key_evidence, visual_delta, observed_evidence, step
 
+    def _web_verify_update_level(
+        self,
+        level: str,
+        posterior: dict[str, float],
+        key_evidence: list[str],
+        query: str,
+        search_evidence: str,
+        parent_context: str = "",
+    ) -> tuple[dict[str, float], list[str], str, float, list[str]]:
+        """Apply search evidence to the existing candidates via S/C/N support."""
+        hyps = list(posterior.keys())
+        response = self.mllm.generate(
+            _web_verify_prompt(level, posterior, query, search_evidence, parent_context),
+            max_new_tokens=WEB_SEARCH_VERIFY_MAX_NEW_TOKENS,
+        )
+        w_scores = self.sl.score(response, hyps, level)
+        prev_top = max(posterior.values(), default=0.0)
+        enhanced_posterior = self.dst.fuse(posterior, [w_scores])
+        web_delta = max(0.0, max(enhanced_posterior.values(), default=0.0) - prev_top)
+
+        enhanced_evidence = list(key_evidence)
+        if max(w_scores.values(), default=1.0) > 1.5:
+            enhanced_evidence.append(f"web verify ({level}): {response[:120]}")
+        return enhanced_posterior, enhanced_evidence, response, web_delta, [response[:240]]
+
     def _web_enhance_level(
         self,
         image: Image.Image,
@@ -1005,22 +1176,69 @@ class GeoPipeline:
         search_evidence: list[str],
         parent_context: str = "",
     ) -> tuple[dict[str, float], list[str], str, str, float, list[str]] | None:
-        """Use optional web search snippets to re-run an ambiguous level."""
-        if not _should_web_enhance_level(level, posterior, visual_delta, search_evidence):
+        """Use optional search snippets to update an ambiguous level."""
+        use_image_search = bool(getattr(self.image_search, "enabled", False))
+        if not _should_web_enhance_level(
+            level, posterior, visual_delta, search_evidence, use_image_search
+        ):
             return None
 
-        query = _build_web_search_query(level, posterior, search_evidence, parent_context)
+        image_search_evidence = ""
+        if use_image_search:
+            image_data = self.image_search.search_image(image)
+            image_search_evidence = format_image_search_evidence(image_data)
+            if image_search_evidence and not is_location_worthy_image_evidence(image_search_evidence):
+                image_search_evidence = ""
+            if (
+                not image_search_evidence
+                and IMAGE_SEARCH_STRICT_TEXT_QUERY
+                and not _has_searchable_web_entity(search_evidence)
+            ):
+                return None
+
+        if image_search_evidence:
+            query = image_evidence_to_text_query(level, image_search_evidence, parent_context)
+            if not query:
+                return None
+        else:
+            query = _build_web_search_query(level, posterior, search_evidence, parent_context)
+
         search_data = self.web_search.search(query)
-        search_evidence = format_search_evidence(search_data)
-        if not search_evidence:
+        text_search_evidence = format_search_evidence(search_data)
+        if not text_search_evidence:
             return None
+
+        if image_search_evidence:
+            search_evidence = (
+                f"ImageSearch evidence:\n{image_search_evidence}\n\n"
+                f"TextSearch evidence:\n{text_search_evidence}"
+            )
+        else:
+            search_evidence = text_search_evidence
+
+        if WEB_SEARCH_UPDATE_MODE == "verify":
+            (
+                enhanced_posterior,
+                enhanced_evidence,
+                raw_resp,
+                web_delta,
+                observed_evidence,
+            ) = self._web_verify_update_level(
+                level, posterior, key_evidence, query, search_evidence, parent_context
+            )
+            if image_search_evidence:
+                enhanced_evidence.append(f"image search ({level}): {image_search_evidence[:120]}")
+            enhanced_evidence.append(f"web search ({level}): {text_search_evidence[:120]}")
+            return enhanced_posterior, enhanced_evidence, raw_resp, query, web_delta, observed_evidence
 
         context = _web_enhance_context(level, posterior, query, search_evidence, parent_context)
         prior, plan, raw_resp = self._hypothesize(image, level, context)
         enhanced_posterior, enhanced_evidence, web_delta, observed_evidence, _ = self._run_level(
             image, level, prior, plan, key_evidence
         )
-        enhanced_evidence.append(f"web search ({level}): {search_evidence[:120]}")
+        if image_search_evidence:
+            enhanced_evidence.append(f"image search ({level}): {image_search_evidence[:120]}")
+        enhanced_evidence.append(f"web search ({level}): {text_search_evidence[:120]}")
         return enhanced_posterior, enhanced_evidence, raw_resp, query, web_delta, observed_evidence
 
     def _web_enhance_country(
@@ -1054,6 +1272,9 @@ class GeoPipeline:
                 context = _context_for_level(level, result, key_evidence)
 
             prior, plan, raw_resp = self._hypothesize(image, level, context)
+            if level == "country":
+                prior, retrieval_diag = self._apply_country_retrieval_prior(image, prior)
+                self._record_retrieval_diag(result, retrieval_diag)
             result[f"{level}_raw_response"] = raw_resp
 
             posterior, key_evidence, visual_delta, level_evidence, level_steps = self._run_level(
@@ -1087,15 +1308,30 @@ class GeoPipeline:
             )
             if enhanced is not None:
                 posterior, key_evidence, raw_resp, web_query, web_delta, level_evidence = enhanced
+                image_evidence = next(
+                    (
+                        item for item in reversed(key_evidence)
+                        if str(item).startswith(f"image search ({level}):")
+                    ),
+                    None,
+                )
                 result[f"{level}_web_enhanced"] = True
                 result[f"{level}_web_search_query"] = web_query
                 result[f"{level}_web_delta"] = web_delta
+                result[f"{level}_image_search_enhanced"] = bool(image_evidence)
+                result[f"{level}_image_search_evidence"] = image_evidence
                 result[f"{level}_raw_response"] = raw_resp
 
             if level == "country":
                 posterior, regularized = _regularize_country_by_continent(
                     posterior, result.get("continent_posterior", {})
                 )
+                posterior, anchor_diag = _retrieval_country_anchor_posterior(
+                    posterior,
+                    result.get("country_retrieval_prior", {}),
+                )
+                result["country_retrieval_anchored"] = bool(anchor_diag.get("applied"))
+                result["country_retrieval_anchor"] = anchor_diag
                 result["country_continent_regularized"] = regularized
             elif level in ("city", "street"):
                 posterior, conflicts = _filter_child_posterior(
@@ -1143,7 +1379,7 @@ class GeoPipeline:
         level: str,
         contexts: list[str],
         key_evidence: list[list[str]],
-    ) -> tuple[list[str], list[dict[str, float]], list[float], list[list[str]], list[int]]:
+    ) -> tuple[list[str], list[dict[str, float]], list[float], list[list[str]], list[int], list[dict]]:
         """Run one hierarchy level for a batch and update key_evidence in place."""
         n = len(images)
         hyp_messages = [_hypothesize_prompt(images[i], level, contexts[i]) for i in range(n)]
@@ -1221,6 +1457,13 @@ class GeoPipeline:
                         },
                         ensure_ascii=True,
                     )
+
+        retrieval_diags = [{} for _ in range(n)]
+        if level == "country":
+            for idx in range(n):
+                priors[idx], retrieval_diags[idx] = self._apply_country_retrieval_prior(
+                    images[idx], priors[idx]
+                )
 
         posteriors = [dict(p) for p in priors]
         pending = [list(pl) for pl in plans]
@@ -1302,7 +1545,7 @@ class GeoPipeline:
 
                 steps[i] += 1
 
-        return hyp_responses, posteriors, visual_deltas, observed_evidence, steps
+        return hyp_responses, posteriors, visual_deltas, observed_evidence, steps, retrieval_diags
 
     def predict_batch(self, images: list) -> list[dict]:
         """
@@ -1330,7 +1573,7 @@ class GeoPipeline:
             subset_images = [images[i] for i in level_indices]
             subset_contexts = [contexts[i] for i in level_indices]
             subset_key_evidence = [key_evidence[i] for i in level_indices]
-            raw_responses, posteriors_subset, deltas_subset, evidence_subset, steps_subset = self._run_level_batch(
+            raw_responses, posteriors_subset, deltas_subset, evidence_subset, steps_subset, retrieval_diags_subset = self._run_level_batch(
                 subset_images, level, subset_contexts, subset_key_evidence
             )
             posteriors_by_idx = {
@@ -1348,6 +1591,9 @@ class GeoPipeline:
             steps_by_idx = {
                 idx: step_count for idx, step_count in zip(level_indices, steps_subset)
             }
+            retrieval_diag_by_idx = {
+                idx: diag for idx, diag in zip(level_indices, retrieval_diags_subset)
+            }
 
             # Replace: only regenerate the country candidate set when belief is
             # genuinely weak and nearly tied. Marginally unstable but plausible
@@ -1363,7 +1609,7 @@ class GeoPipeline:
                         for i in unstable
                     ]
                     replace_key_evidence = [key_evidence[i] for i in unstable]
-                    repl_raw, repl_posts, repl_deltas, repl_evidence, repl_steps = self._run_level_batch(
+                    repl_raw, repl_posts, repl_deltas, repl_evidence, repl_steps, _ = self._run_level_batch(
                         replace_images, level, replace_contexts, replace_key_evidence
                     )
                     for idx, raw, post, delta, evidence in zip(
@@ -1386,6 +1632,7 @@ class GeoPipeline:
                         posteriors_by_idx[idx],
                         visual_delta_by_idx.get(idx, 0.0),
                         (level_evidence_by_idx.get(idx, []) or []) + key_evidence[idx][-3:],
+                        bool(getattr(self.image_search, "enabled", False)),
                     )
                 ]
                 for idx in web_unstable:
@@ -1409,6 +1656,15 @@ class GeoPipeline:
                     results[idx][f"{level}_web_enhanced"] = True
                     results[idx][f"{level}_web_search_query"] = web_query
                     results[idx][f"{level}_web_delta"] = web_delta
+                    image_evidence = next(
+                        (
+                            item for item in reversed(enhanced_key_evidence)
+                            if str(item).startswith(f"image search ({level}):")
+                        ),
+                        None,
+                    )
+                    results[idx][f"{level}_image_search_enhanced"] = bool(image_evidence)
+                    results[idx][f"{level}_image_search_evidence"] = image_evidence
 
             # ── Collect level results ───────────────────────────────────────────
             for i in level_indices:
@@ -1416,9 +1672,16 @@ class GeoPipeline:
                 results[i][f"{level}_raw_response"] = raw_by_idx[i]
 
                 if level == "country":
+                    self._record_retrieval_diag(results[i], retrieval_diag_by_idx.get(i, {}))
                     posterior, regularized = _regularize_country_by_continent(
                         posterior, results[i].get("continent_posterior", {})
                     )
+                    posterior, anchor_diag = _retrieval_country_anchor_posterior(
+                        posterior,
+                        results[i].get("country_retrieval_prior", {}),
+                    )
+                    results[i]["country_retrieval_anchored"] = bool(anchor_diag.get("applied"))
+                    results[i]["country_retrieval_anchor"] = anchor_diag
                     results[i]["country_continent_regularized"] = regularized
                     posteriors_by_idx[i] = posterior
                 elif level in ("city", "street"):

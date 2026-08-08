@@ -149,9 +149,14 @@ def analyze(records: list[dict]) -> dict:
     conflicts = [r for r in records if _country_conflicts(r)]
     country_replaced = sum(1 for r in records if r.get("country_replaced"))
     country_child_backtracked = sum(1 for r in records if r.get("country_child_backtracked"))
+    country_retrieval_enhanced = sum(1 for r in records if r.get("country_retrieval_enhanced"))
+    country_retrieval_anchored = sum(1 for r in records if r.get("country_retrieval_anchored"))
     country_web_enhanced = sum(1 for r in records if r.get("country_web_enhanced"))
     city_web_enhanced = sum(1 for r in records if r.get("city_web_enhanced"))
     street_web_enhanced = sum(1 for r in records if r.get("street_web_enhanced"))
+    country_image_search_enhanced = sum(1 for r in records if r.get("country_image_search_enhanced"))
+    city_image_search_enhanced = sum(1 for r in records if r.get("city_image_search_enhanced"))
+    street_image_search_enhanced = sum(1 for r in records if r.get("street_image_search_enhanced"))
     visual_deltas = [
         float(r["country_visual_delta"]) for r in records
         if r.get("country_visual_delta") is not None
@@ -266,6 +271,8 @@ def analyze(records: list[dict]) -> dict:
         "country_child_conflict_rate": round(100.0 * len(conflicts) / total, 2) if total else 0.0,
         "country_replaced_rate": round(100.0 * country_replaced / total, 2) if total else 0.0,
         "country_child_backtracked_rate": round(100.0 * country_child_backtracked / total, 2) if total else 0.0,
+        "country_retrieval_enhanced_rate": round(100.0 * country_retrieval_enhanced / total, 2) if total else 0.0,
+        "country_retrieval_anchored_rate": round(100.0 * country_retrieval_anchored / total, 2) if total else 0.0,
         "country_web_enhanced_rate": round(100.0 * country_web_enhanced / total, 2) if total else 0.0,
         "city_web_enhanced_rate": round(100.0 * city_web_enhanced / total, 2) if total else 0.0,
         "street_web_enhanced_rate": round(100.0 * street_web_enhanced / total, 2) if total else 0.0,
@@ -273,6 +280,11 @@ def analyze(records: list[dict]) -> dict:
             "country": round(100.0 * country_web_enhanced / total, 2) if total else 0.0,
             "city": round(100.0 * city_web_enhanced / total, 2) if total else 0.0,
             "street": round(100.0 * street_web_enhanced / total, 2) if total else 0.0,
+        },
+        "image_search_enhanced_rate": {
+            "country": round(100.0 * country_image_search_enhanced / total, 2) if total else 0.0,
+            "city": round(100.0 * city_image_search_enhanced / total, 2) if total else 0.0,
+            "street": round(100.0 * street_image_search_enhanced / total, 2) if total else 0.0,
         },
         "country_visual_delta": {
             "mean": round(mean(visual_deltas), 4) if visual_deltas else None,
@@ -323,9 +335,14 @@ def analyze(records: list[dict]) -> dict:
             ),
             "country_stable": _bucket_accuracy(records, lambda r: r.get("country_stable")),
             "geocode_source": _bucket_accuracy(records, lambda r: r.get("geocode_source") or "missing"),
+            "country_retrieval_enhanced": _bucket_accuracy(records, lambda r: bool(r.get("country_retrieval_enhanced"))),
+            "country_retrieval_anchored": _bucket_accuracy(records, lambda r: bool(r.get("country_retrieval_anchored"))),
             "country_web_enhanced": _bucket_accuracy(records, lambda r: bool(r.get("country_web_enhanced"))),
             "city_web_enhanced": _bucket_accuracy(records, lambda r: bool(r.get("city_web_enhanced"))),
             "street_web_enhanced": _bucket_accuracy(records, lambda r: bool(r.get("street_web_enhanced"))),
+            "country_image_search_enhanced": _bucket_accuracy(records, lambda r: bool(r.get("country_image_search_enhanced"))),
+            "city_image_search_enhanced": _bucket_accuracy(records, lambda r: bool(r.get("city_image_search_enhanced"))),
+            "street_image_search_enhanced": _bucket_accuracy(records, lambda r: bool(r.get("street_image_search_enhanced"))),
             "city_country_factcheck_rejected": _bucket_accuracy(
                 records, lambda r: bool(r.get("city_country_factcheck_rejected"))
             ),
@@ -410,6 +427,10 @@ def _print_report(report: dict) -> None:
     print(f"Country replace rate: {report['country_replaced_rate']:.2f}%")
     if report.get("country_child_backtracked_rate"):
         print(f"Country child backtrack promote rate: {report['country_child_backtracked_rate']:.2f}%")
+    if report.get("country_retrieval_enhanced_rate"):
+        print(f"Country retrieval prior rate: {report['country_retrieval_enhanced_rate']:.2f}%")
+    if report.get("country_retrieval_anchored_rate"):
+        print(f"Country retrieval anchor rate: {report['country_retrieval_anchored_rate']:.2f}%")
     web_rates = report.get("web_enhanced_rate") or {
         "country": report.get("country_web_enhanced_rate", 0.0),
         "city": report.get("city_web_enhanced_rate", 0.0),
@@ -420,6 +441,13 @@ def _print_report(report: dict) -> None:
         f"country={web_rates['country']:.2f}% "
         f"city={web_rates['city']:.2f}% street={web_rates['street']:.2f}%"
     )
+    image_rates = report.get("image_search_enhanced_rate") or {}
+    if image_rates:
+        print(
+            "ImageSearch enhance rate: "
+            f"country={image_rates['country']:.2f}% "
+            f"city={image_rates['city']:.2f}% street={image_rates['street']:.2f}%"
+        )
     visual_delta = report.get("country_visual_delta", {})
     if visual_delta.get("mean") is not None:
         print(
@@ -513,9 +541,14 @@ def _print_report(report: dict) -> None:
             "continent_top_mass",
             "country_continent_regularized",
             "geocode_source",
+            "country_retrieval_enhanced",
+            "country_retrieval_anchored",
             "country_web_enhanced",
             "city_web_enhanced",
             "street_web_enhanced",
+            "country_image_search_enhanced",
+            "city_image_search_enhanced",
+            "street_image_search_enhanced",
             "city_country_factcheck_rejected",
             "country_child_backtracked",
             "country_descent_blocked_reason",

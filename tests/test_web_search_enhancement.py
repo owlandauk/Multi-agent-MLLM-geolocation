@@ -68,20 +68,28 @@ class WebSearchEnhancementTests(unittest.TestCase):
             )
         )
 
-    def test_pipeline_reruns_level_from_web_snippets(self):
-        geo = pipeline.GeoPipeline(FakeMllm())
-        fake_search = FakeSearch()
-        geo.web_search = fake_search
+    def test_default_search_update_mode_uses_candidate_verification(self):
+        self.assertEqual(pipeline.WEB_SEARCH_UPDATE_MODE, "verify")
 
-        enhanced = geo._web_enhance_level(
-            Image.new("RGB", (2, 2)),
-            "city",
-            {"Madrid": 0.51, "Barcelona": 0.49},
-            [],
-            0.01,
-            ["La Deessa statue"],
-            "Spain",
-        )
+    def test_pipeline_reruns_level_from_web_snippets(self):
+        old_mode = pipeline.WEB_SEARCH_UPDATE_MODE
+        pipeline.WEB_SEARCH_UPDATE_MODE = "rehypothesize"
+        try:
+            geo = pipeline.GeoPipeline(FakeMllm())
+            fake_search = FakeSearch()
+            geo.web_search = fake_search
+
+            enhanced = geo._web_enhance_level(
+                Image.new("RGB", (2, 2)),
+                "city",
+                {"Madrid": 0.51, "Barcelona": 0.49},
+                [],
+                0.01,
+                ["La Deessa statue"],
+                "Spain",
+            )
+        finally:
+            pipeline.WEB_SEARCH_UPDATE_MODE = old_mode
 
         self.assertIsNotNone(enhanced)
         posterior, evidence, raw_response, query, web_delta, observed = enhanced

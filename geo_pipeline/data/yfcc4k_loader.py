@@ -27,8 +27,19 @@ class YFCC4KDataset:
         row = self.meta.iloc[idx]
         img_path = self.img_dir / f"{row['photo_id']}.jpg"
         image = Image.open(img_path).convert("RGB")
+        photo_id = str(row["photo_id"])
+        image.info["photo_id"] = photo_id
+        image.info["img_path"] = str(img_path)
+        for url_col in ("img_url", "image_url", "url"):
+            if url_col in row and not pd.isna(row[url_col]):
+                image_url = str(row[url_col]).strip()
+                if image_url:
+                    image.info["image_url"] = image_url
+                    image.image_url = image_url
+                    break
+        image.photo_id = photo_id
         return {
-            "photo_id": str(row["photo_id"]),
+            "photo_id": photo_id,
             "image": image,
             "gt_lat": float(row["lat"]),
             "gt_lon": float(row["lon"]),

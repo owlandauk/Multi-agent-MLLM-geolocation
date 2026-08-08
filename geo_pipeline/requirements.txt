@@ -7,3 +7,7 @@ geopy
 qwen-vl-utils
 dashscope
 vllm>=0.6.3
+geoclip
+reverse-geocoder
+pycountry
+google-cloud-vision

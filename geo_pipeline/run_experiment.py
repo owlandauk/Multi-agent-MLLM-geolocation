@@ -28,6 +28,18 @@ ENV_KEYS = (
     "VLLM_GPU_MEMORY_UTILIZATION",
     "WEB_SEARCH_ENABLED",
     "WEB_SEARCH_LEVELS",
+    "WEB_SEARCH_UPDATE_MODE",
+    "WEB_SEARCH_VERIFY_MAX_NEW_TOKENS",
+    "IMAGE_SEARCH_ENABLED",
+    "IMAGE_SEARCH_PROVIDER",
+    "IMAGE_SEARCH_STRICT_TEXT_QUERY",
+    "IMAGE_SEARCH_MAX_ENTITIES",
+    "IMAGE_SEARCH_MAX_UNCACHED_CALLS",
+    "IMAGE_SEARCH_CACHE_PATH",
+    "SERPAPI_IMAGE_URL_TEMPLATE",
+    "SERPAPI_LENS_TYPE",
+    "SERPAPI_LENS_HL",
+    "SERPAPI_LENS_COUNTRY",
     "VERIFY_SUPPORT_FORMAT",
     "STRICT_COUNTRY_ALIAS_MATCH",
     "COUNTRY_CUE_ENSEMBLE",
@@ -40,6 +52,16 @@ ENV_KEYS = (
     "CHILD_BACKTRACK_PROMOTE",
     "CHILD_BACKTRACK_MAX_COUNTRY_TOP",
     "CHILD_BACKTRACK_MIN_CHILD_TOP",
+    "RETRIEVAL_PRIOR_ENABLED",
+    "RETRIEVAL_PRIOR_PATH",
+    "RETRIEVAL_PRIOR_WEIGHT",
+    "RETRIEVAL_PRIOR_ADAPTIVE",
+    "RETRIEVAL_PRIOR_SAME_CONTINENT_WEIGHT",
+    "RETRIEVAL_PRIOR_CROSS_CONTINENT_WEIGHT",
+    "RETRIEVAL_COUNTRY_ANCHOR_ENABLED",
+    "RETRIEVAL_COUNTRY_ANCHOR_MAX_COUNTRY_TOP",
+    "RETRIEVAL_COUNTRY_ANCHOR_MIN_PRIOR_TOP",
+    "RETRIEVAL_COUNTRY_ANCHOR_WEIGHT",
     "COUNTRY_REPLACE_ATTEMPTS",
     "POMDP_POLICY",
     "POMDP_EIG_LEVELS",
@@ -158,6 +180,12 @@ def main() -> int:
     parser.add_argument("--notes", default="")
     parser.add_argument("--strict_child_geocode", action="store_true")
     parser.add_argument("--disable_bare_city_geocode", action="store_true")
+    parser.add_argument("--retrieval_continent_fallback", action="store_true")
+    parser.add_argument("--retrieval_continent_max_country_top", type=float, default=0.50)
+    parser.add_argument("--retrieval_continent_min_prior_top", type=float, default=0.50)
+    parser.add_argument("--retrieval_country_fallback", action="store_true")
+    parser.add_argument("--retrieval_country_max_country_top", type=float, default=0.55)
+    parser.add_argument("--retrieval_country_min_prior_top", type=float, default=0.15)
     parser.add_argument("--records_jsonl", default="results/experiment_runs.jsonl")
     parser.add_argument("--records_csv", default="results/experiment_runs.csv")
     args = parser.parse_args()
@@ -184,6 +212,22 @@ def main() -> int:
         cmd.append("--strict_child_geocode")
     if args.disable_bare_city_geocode:
         cmd.append("--disable_bare_city_geocode")
+    if args.retrieval_continent_fallback:
+        cmd.append("--retrieval_continent_fallback")
+        cmd += [
+            "--retrieval_continent_max_country_top",
+            str(args.retrieval_continent_max_country_top),
+            "--retrieval_continent_min_prior_top",
+            str(args.retrieval_continent_min_prior_top),
+        ]
+    if args.retrieval_country_fallback:
+        cmd.append("--retrieval_country_fallback")
+        cmd += [
+            "--retrieval_country_max_country_top",
+            str(args.retrieval_country_max_country_top),
+            "--retrieval_country_min_prior_top",
+            str(args.retrieval_country_min_prior_top),
+        ]
 
     env_snapshot = {key: os.environ.get(key) for key in ENV_KEYS if os.environ.get(key) is not None}
     start_wall = time.time()

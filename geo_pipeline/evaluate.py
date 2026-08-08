@@ -14,6 +14,7 @@ import argparse
 import json
 import math
 import time
+from functools import lru_cache
 from pathlib import Path
 from tqdm import tqdm
 from geopy.geocoders import Nominatim
@@ -57,6 +58,7 @@ _CONTINENT_CENTROIDS = {
 # (shared with pipeline.py). Import re-exports above.
 
 
+@lru_cache(maxsize=20000)
 def geocode(location_name: str):
     """Name → (lat, lon). Returns None if lookup fails."""
     try:
@@ -141,6 +143,91 @@ def _continent_fallback_coords(pred: dict) -> tuple | None:
     return _CONTINENT_CENTROIDS.get(best)
 
 
+def _retrieval_continent_fallback_coords(
+    pred: dict,
+    max_country_top: float,
+    min_prior_top: float,
+) -> tuple[tuple[float, float] | None, dict]:
+    """Fallback to the retrieval prior's continent when country belief is weak.
+
+    This is opt-in evaluation logic. It does not feed back into SL/DST/POMDP.
+    """
+    country_post = pred.get("country_posterior") or {}
+    country_top = max((float(v) for v in country_post.values()), default=0.0)
+    if country_top >= max_country_top:
+        return None, {"country_top": country_top}
+
+    retrieval_prior = pred.get("country_retrieval_prior") or {}
+    prior_top = max((float(v) for v in retrieval_prior.values()), default=0.0)
+    if prior_top < min_prior_top:
+        return None, {"country_top": country_top, "prior_top": prior_top}
+
+    votes: dict[str, float] = {}
+    for country, prob in retrieval_prior.items():
+        cont = continent_of(country)
+        if cont:
+            votes[cont] = votes.get(cont, 0.0) + float(prob)
+    if not votes:
+        return None, {"country_top": country_top, "prior_top": prior_top}
+
+    best = max(votes, key=votes.get)
+    coords = _CONTINENT_CENTROIDS.get(best)
+    return coords, {
+        "country_top": country_top,
+        "prior_top": prior_top,
+        "continent": best,
+        "continent_mass": votes[best],
+    }
+
+
+def _top_country_score(scores: dict) -> tuple[str | None, float]:
+    best_country = None
+    best_score = 0.0
+    for country, score in (scores or {}).items():
+        canonical = canonicalize_country(country)
+        if not canonical:
+            continue
+        try:
+            value = float(score)
+        except (TypeError, ValueError):
+            continue
+        if best_country is None or value > best_score:
+            best_country = canonical
+            best_score = value
+    return best_country, best_score
+
+
+def _retrieval_country_fallback_coords(
+    pred: dict,
+    max_country_top: float,
+    min_prior_top: float,
+) -> tuple[tuple[float, float] | None, dict]:
+    """Fallback to retrieval top-country geocoding when posterior is weak.
+
+    This is opt-in evaluation logic for retrieval-backed coarse geolocation. It
+    preserves the normal GeoBayes posterior unless the final country belief is
+    low-confidence.
+    """
+    country_post = pred.get("country_posterior") or {}
+    country_top = max((float(v) for v in country_post.values()), default=0.0)
+    if country_top >= max_country_top:
+        return None, {"country_top": country_top}
+
+    retrieval_country, prior_top = _top_country_score(pred.get("country_retrieval_prior") or {})
+    if not retrieval_country or prior_top < min_prior_top:
+        return None, {"country_top": country_top, "prior_top": prior_top}
+
+    coords = geocode(retrieval_country)
+    diag = {
+        "country_top": country_top,
+        "prior_top": prior_top,
+        "country": retrieval_country,
+    }
+    if coords is None:
+        diag["geocode_failed"] = True
+    return coords, diag
+
+
 def evaluate(args):
     mllm     = MLLMClient()
     pipeline = GeoPipeline(mllm)
@@ -207,6 +294,34 @@ def evaluate(args):
                     geocode_source = "continent_fallback"
                     country_consistency = "fallback"
 
+            retrieval_continent_fallback = {}
+            if args.retrieval_continent_fallback:
+                fallback_coords, retrieval_continent_fallback = _retrieval_continent_fallback_coords(
+                    pred,
+                    args.retrieval_continent_max_country_top,
+                    args.retrieval_continent_min_prior_top,
+                )
+                if fallback_coords is not None:
+                    retrieval_continent_fallback["previous_geocode_source"] = geocode_source
+                    pred_coords = fallback_coords
+                    geocode_source = "retrieval_continent_fallback"
+                    country_consistency = "retrieval_continent_fallback"
+
+            retrieval_country_fallback = {}
+            if args.retrieval_country_fallback:
+                fallback_coords, retrieval_country_fallback = _retrieval_country_fallback_coords(
+                    pred,
+                    args.retrieval_country_max_country_top,
+                    args.retrieval_country_min_prior_top,
+                )
+                if fallback_coords is not None:
+                    retrieval_country_fallback["previous_geocode_source"] = geocode_source
+                    retrieval_country_fallback["previous_pred_country"] = pred_country
+                    pred_country = retrieval_country_fallback.get("country") or pred_country
+                    pred_coords = fallback_coords
+                    geocode_source = "retrieval_country_fallback"
+                    country_consistency = "retrieval_country_fallback"
+
             gt_lat, gt_lon = sample["gt_lat"], sample["gt_lon"]
             dist_km = haversine(gt_lat, gt_lon, pred_coords[0], pred_coords[1]) \
                       if pred_coords else float("inf")
@@ -224,6 +339,8 @@ def evaluate(args):
                 "pomdp_policy": pred.get("pomdp_policy"),
                 "geocode_source": geocode_source,
                 "country_consistency": country_consistency,
+                "retrieval_continent_fallback": retrieval_continent_fallback,
+                "retrieval_country_fallback": retrieval_country_fallback,
                 "continent_posterior": {
                     k: round(float(v), 4)
                     for k, v in (pred.get("continent_posterior") or {}).items()
@@ -246,15 +363,29 @@ def evaluate(args):
                 "country_before_child_backtrack": pred.get("country_before_child_backtrack"),
                 "country_child_backtrack_level": pred.get("country_child_backtrack_level"),
                 "country_child_backtrack_country": pred.get("country_child_backtrack_country"),
+                "country_retrieval_enhanced": bool(pred.get("country_retrieval_enhanced")),
+                "country_retrieval_prior": pred.get("country_retrieval_prior"),
+                "country_retrieval_weight": pred.get("country_retrieval_weight"),
+                "country_retrieval_effective_weight": pred.get("country_retrieval_effective_weight"),
+                "country_retrieval_relation": pred.get("country_retrieval_relation"),
+                "country_prior_before_retrieval": pred.get("country_prior_before_retrieval"),
+                "country_retrieval_anchored": bool(pred.get("country_retrieval_anchored")),
+                "country_retrieval_anchor": pred.get("country_retrieval_anchor"),
                 "country_web_enhanced": bool(pred.get("country_web_enhanced")),
                 "country_web_search_query": pred.get("country_web_search_query"),
+                "country_image_search_enhanced": bool(pred.get("country_image_search_enhanced")),
+                "country_image_search_evidence": pred.get("country_image_search_evidence"),
                 "country_visual_delta": pred.get("country_visual_delta"),
                 "country_web_delta": pred.get("country_web_delta"),
                 "city_web_enhanced": bool(pred.get("city_web_enhanced")),
                 "city_web_search_query": pred.get("city_web_search_query"),
+                "city_image_search_enhanced": bool(pred.get("city_image_search_enhanced")),
+                "city_image_search_evidence": pred.get("city_image_search_evidence"),
                 "city_web_delta": pred.get("city_web_delta"),
                 "street_web_enhanced": bool(pred.get("street_web_enhanced")),
                 "street_web_search_query": pred.get("street_web_search_query"),
+                "street_image_search_enhanced": bool(pred.get("street_image_search_enhanced")),
+                "street_image_search_evidence": pred.get("street_image_search_evidence"),
                 "street_web_delta": pred.get("street_web_delta"),
                 "country_descent_blocked_reason": pred.get("country_descent_blocked_reason"),
                 "city_backtrack_conflicts": pred.get("city_backtrack_conflicts", []),
@@ -324,5 +455,39 @@ if __name__ == "__main__":
         action="store_false",
         dest="allow_bare_city_geocode",
         help="Disable unqualified city Nominatim matches for ablations.",
+    )
+    parser.add_argument(
+        "--retrieval_continent_fallback",
+        action="store_true",
+        help="For low-confidence country predictions, geocode to the retrieval prior's continent centroid.",
+    )
+    parser.add_argument(
+        "--retrieval_continent_max_country_top",
+        type=float,
+        default=0.50,
+        help="Apply retrieval continent fallback only when country posterior top mass is below this value.",
+    )
+    parser.add_argument(
+        "--retrieval_continent_min_prior_top",
+        type=float,
+        default=0.50,
+        help="Apply retrieval continent fallback only when retrieval prior top country mass is at least this value.",
+    )
+    parser.add_argument(
+        "--retrieval_country_fallback",
+        action="store_true",
+        help="For low-confidence country predictions, geocode to the retrieval prior's top country.",
+    )
+    parser.add_argument(
+        "--retrieval_country_max_country_top",
+        type=float,
+        default=0.55,
+        help="Apply retrieval country fallback only when country posterior top mass is below this value.",
+    )
+    parser.add_argument(
+        "--retrieval_country_min_prior_top",
+        type=float,
+        default=0.15,
+        help="Apply retrieval country fallback only when retrieval prior top country mass is at least this value.",
     )
     evaluate(parser.parse_args())
