@@ -186,6 +186,8 @@ def main() -> int:
     parser.add_argument("--retrieval_country_fallback", action="store_true")
     parser.add_argument("--retrieval_country_max_country_top", type=float, default=0.55)
     parser.add_argument("--retrieval_country_min_prior_top", type=float, default=0.15)
+    parser.add_argument("--retrieval_country_same_continent_max_country_top", type=float, default=None)
+    parser.add_argument("--retrieval_country_cross_continent_max_country_top", type=float, default=None)
     parser.add_argument("--records_jsonl", default="results/experiment_runs.jsonl")
     parser.add_argument("--records_csv", default="results/experiment_runs.csv")
     args = parser.parse_args()
@@ -228,6 +230,16 @@ def main() -> int:
             "--retrieval_country_min_prior_top",
             str(args.retrieval_country_min_prior_top),
         ]
+        if args.retrieval_country_same_continent_max_country_top is not None:
+            cmd += [
+                "--retrieval_country_same_continent_max_country_top",
+                str(args.retrieval_country_same_continent_max_country_top),
+            ]
+        if args.retrieval_country_cross_continent_max_country_top is not None:
+            cmd += [
+                "--retrieval_country_cross_continent_max_country_top",
+                str(args.retrieval_country_cross_continent_max_country_top),
+            ]
 
     env_snapshot = {key: os.environ.get(key) for key in ENV_KEYS if os.environ.get(key) is not None}
     start_wall = time.time()

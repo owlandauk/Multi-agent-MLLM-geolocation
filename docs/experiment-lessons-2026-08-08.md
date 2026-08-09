@@ -51,3 +51,18 @@
 ### The Pattern
 - Next time, use 1500 as the decision gate, then run full only when both country and continent pass the threshold on the same code path.
 - Signal to recognize: a 500 run looks promising but full later regresses, or a slow multi-GPU run spends more time on communication than useful inference.
+
+## Relation-Aware Fallback Is the Current Balanced Choice
+
+### Context
+- A relation-aware fallback gate on i14s48 used `RETRIEVAL_PRIOR_WEIGHT=0.15`, `cross_continent country_top < 0.55`, and `same_continent country_top < 0.50`.
+- The 1500 gate reached `5.40 / 15.73 / 26.80 / 46.33 / 72.33` for street/city/region/country/continent.
+- The full run reached `5.22 / 14.93 / 25.86 / 46.80 / 73.19`, compared with the previous full `0.55` fallback at `5.09 / 14.70 / 25.73 / 46.25 / 73.26`.
+
+### Root Cause / Core Insight
+- Cross-continent retrieval disagreement is the high-value repair case: on full, applied cross-continent fallback had `51.71%` continent accuracy, while non-applied cross-continent rows had `31.97%`.
+- Same-continent fallback is mostly a coarse repair and should stay conservative because it replaces potentially useful child geocodes with country centers.
+
+### The Pattern
+- Next time the target is balanced accuracy, prefer relation-aware fallback over a single global `0.55` gate.
+- Signal to recognize: the relation-aware run raises country/city/region while losing only noise-level continent accuracy (`0.07` points on the full run).

@@ -201,6 +201,8 @@ def _retrieval_country_fallback_coords(
     pred: dict,
     max_country_top: float,
     min_prior_top: float,
+    same_continent_max_country_top: float | None = None,
+    cross_continent_max_country_top: float | None = None,
 ) -> tuple[tuple[float, float] | None, dict]:
     """Fallback to retrieval top-country geocoding when posterior is weak.
 
@@ -209,20 +211,51 @@ def _retrieval_country_fallback_coords(
     low-confidence.
     """
     country_post = pred.get("country_posterior") or {}
-    country_top = max((float(v) for v in country_post.values()), default=0.0)
-    if country_top >= max_country_top:
-        return None, {"country_top": country_top}
-
+    visual_country, country_top = _top_country_score(country_post)
     retrieval_country, prior_top = _top_country_score(pred.get("country_retrieval_prior") or {})
-    if not retrieval_country or prior_top < min_prior_top:
-        return None, {"country_top": country_top, "prior_top": prior_top}
+    visual_continent = continent_of(visual_country or "")
+    retrieval_continent = continent_of(retrieval_country or "")
 
-    coords = geocode(retrieval_country)
+    relation = "unknown"
+    effective_max_country_top = max_country_top
+    if visual_continent and retrieval_continent:
+        if visual_continent != retrieval_continent:
+            relation = "cross_continent"
+            effective_max_country_top = (
+                cross_continent_max_country_top
+                if cross_continent_max_country_top is not None
+                else max_country_top
+            )
+        else:
+            relation = "same_continent"
+            effective_max_country_top = (
+                same_continent_max_country_top
+                if same_continent_max_country_top is not None
+                else max_country_top
+            )
+    elif retrieval_continent:
+        relation = "unknown_visual_continent"
+
     diag = {
         "country_top": country_top,
-        "prior_top": prior_top,
-        "country": retrieval_country,
+        "visual_country": visual_country,
+        "visual_continent": visual_continent,
+        "retrieval_continent": retrieval_continent,
+        "relation": relation,
+        "effective_max_country_top": effective_max_country_top,
     }
+
+    if not retrieval_country or prior_top < min_prior_top:
+        diag["prior_top"] = prior_top
+        return None, diag
+
+    if country_top >= effective_max_country_top:
+        diag["prior_top"] = prior_top
+        return None, diag
+
+    coords = geocode(retrieval_country)
+    diag["prior_top"] = prior_top
+    diag["country"] = retrieval_country
     if coords is None:
         diag["geocode_failed"] = True
     return coords, diag
@@ -313,6 +346,8 @@ def evaluate(args):
                     pred,
                     args.retrieval_country_max_country_top,
                     args.retrieval_country_min_prior_top,
+                    args.retrieval_country_same_continent_max_country_top,
+                    args.retrieval_country_cross_continent_max_country_top,
                 )
                 if fallback_coords is not None:
                     retrieval_country_fallback["previous_geocode_source"] = geocode_source
@@ -489,5 +524,17 @@ if __name__ == "__main__":
         type=float,
         default=0.15,
         help="Apply retrieval country fallback only when retrieval prior top country mass is at least this value.",
+    )
+    parser.add_argument(
+        "--retrieval_country_same_continent_max_country_top",
+        type=float,
+        default=None,
+        help="Override retrieval country fallback confidence gate when visual and retrieval top countries are on the same continent.",
+    )
+    parser.add_argument(
+        "--retrieval_country_cross_continent_max_country_top",
+        type=float,
+        default=None,
+        help="Override retrieval country fallback confidence gate when visual and retrieval top countries are on different continents.",
     )
     evaluate(parser.parse_args())

@@ -65,6 +65,8 @@ class EvaluateRetrievalDiagnosticsTests(unittest.TestCase):
             retrieval_country_fallback=False,
             retrieval_country_max_country_top=0.55,
             retrieval_country_min_prior_top=0.15,
+            retrieval_country_same_continent_max_country_top=None,
+            retrieval_country_cross_continent_max_country_top=None,
             out=out_path,
         )
         try:
@@ -135,6 +137,42 @@ class EvaluateRetrievalDiagnosticsTests(unittest.TestCase):
 
         self.assertIsNone(coords)
         self.assertEqual(diag["country_top"], 0.7)
+        geocode.assert_not_called()
+
+    def test_retrieval_country_fallback_uses_cross_continent_gate(self):
+        with patch.object(evaluate, "geocode", return_value=(46.2276, 2.2137)) as geocode:
+            coords, diag = evaluate._retrieval_country_fallback_coords(
+                {
+                    "country_posterior": {"canada": 0.53, "france": 0.47},
+                    "country_retrieval_prior": {"france": 0.7, "germany": 0.2},
+                },
+                max_country_top=0.50,
+                min_prior_top=0.15,
+                same_continent_max_country_top=0.45,
+                cross_continent_max_country_top=0.55,
+            )
+
+        self.assertEqual(coords, (46.2276, 2.2137))
+        self.assertEqual(diag["relation"], "cross_continent")
+        self.assertEqual(diag["effective_max_country_top"], 0.55)
+        geocode.assert_called_once_with("france")
+
+    def test_retrieval_country_fallback_protects_same_continent_child_geocode(self):
+        with patch.object(evaluate, "geocode") as geocode:
+            coords, diag = evaluate._retrieval_country_fallback_coords(
+                {
+                    "country_posterior": {"france": 0.53, "germany": 0.47},
+                    "country_retrieval_prior": {"germany": 0.7, "france": 0.2},
+                },
+                max_country_top=0.55,
+                min_prior_top=0.15,
+                same_continent_max_country_top=0.50,
+                cross_continent_max_country_top=0.55,
+            )
+
+        self.assertIsNone(coords)
+        self.assertEqual(diag["relation"], "same_continent")
+        self.assertEqual(diag["effective_max_country_top"], 0.50)
         geocode.assert_not_called()
 
 
