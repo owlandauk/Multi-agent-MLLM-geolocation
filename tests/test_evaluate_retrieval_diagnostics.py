@@ -83,6 +83,9 @@ class EvaluateRetrievalDiagnosticsTests(unittest.TestCase):
 
         self.assertEqual(record["country_retrieval_effective_weight"], 0.10)
         self.assertEqual(record["country_retrieval_relation"], "same_continent_conflict")
+        self.assertEqual(record["pre_fallback_pred_country"], "France")
+        self.assertEqual(record["pre_fallback_geocode_source"], "city_bare")
+        self.assertAlmostEqual(record["pre_fallback_dist_km"], 0.0, places=3)
 
     def test_retrieval_continent_fallback_uses_weak_country_belief(self):
         coords, diag = evaluate._retrieval_continent_fallback_coords(

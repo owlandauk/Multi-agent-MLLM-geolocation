@@ -327,6 +327,11 @@ def evaluate(args):
                     geocode_source = "continent_fallback"
                     country_consistency = "fallback"
 
+            pre_fallback_pred_country = pred_country
+            pre_fallback_coords = pred_coords
+            pre_fallback_geocode_source = geocode_source
+            pre_fallback_country_consistency = country_consistency
+
             retrieval_continent_fallback = {}
             if args.retrieval_continent_fallback:
                 fallback_coords, retrieval_continent_fallback = _retrieval_continent_fallback_coords(
@@ -371,6 +376,14 @@ def evaluate(args):
                 "pred_lat":     pred_coords[0] if pred_coords else None,
                 "pred_lon":     pred_coords[1] if pred_coords else None,
                 "dist_km":      dist_km,
+                "pre_fallback_pred_country": pre_fallback_pred_country,
+                "pre_fallback_pred_lat": pre_fallback_coords[0] if pre_fallback_coords else None,
+                "pre_fallback_pred_lon": pre_fallback_coords[1] if pre_fallback_coords else None,
+                "pre_fallback_dist_km": haversine(
+                    gt_lat, gt_lon, pre_fallback_coords[0], pre_fallback_coords[1]
+                ) if pre_fallback_coords else float("inf"),
+                "pre_fallback_geocode_source": pre_fallback_geocode_source,
+                "pre_fallback_country_consistency": pre_fallback_country_consistency,
                 "pomdp_policy": pred.get("pomdp_policy"),
                 "geocode_source": geocode_source,
                 "country_consistency": country_consistency,
