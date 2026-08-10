@@ -203,6 +203,7 @@ def _retrieval_country_fallback_coords(
     min_prior_top: float,
     same_continent_max_country_top: float | None = None,
     cross_continent_max_country_top: float | None = None,
+    child_retry: bool = False,
 ) -> tuple[tuple[float, float] | None, dict]:
     """Fallback to retrieval top-country geocoding when posterior is weak.
 
@@ -252,6 +253,23 @@ def _retrieval_country_fallback_coords(
     if country_top >= effective_max_country_top:
         diag["prior_top"] = prior_top
         return None, diag
+
+    if child_retry:
+        for level in ("street", "city"):
+            name = pred.get(level)
+            if not name or name == "Unknown":
+                continue
+            embedded_country = canonicalize_country(name)
+            if embedded_country and embedded_country != retrieval_country:
+                continue
+            query = name if embedded_country == retrieval_country else f"{name}, {retrieval_country}"
+            coords = geocode(query)
+            if coords is not None:
+                diag["prior_top"] = prior_top
+                diag["country"] = retrieval_country
+                diag["child_retry_level"] = level
+                diag["child_retry_query"] = query
+                return coords, diag
 
     coords = geocode(retrieval_country)
     diag["prior_top"] = prior_top
@@ -353,6 +371,7 @@ def evaluate(args):
                     args.retrieval_country_min_prior_top,
                     args.retrieval_country_same_continent_max_country_top,
                     args.retrieval_country_cross_continent_max_country_top,
+                    args.retrieval_country_child_retry,
                 )
                 if fallback_coords is not None:
                     retrieval_country_fallback["previous_geocode_source"] = geocode_source
@@ -549,5 +568,10 @@ if __name__ == "__main__":
         type=float,
         default=None,
         help="Override retrieval country fallback confidence gate when visual and retrieval top countries are on different continents.",
+    )
+    parser.add_argument(
+        "--retrieval_country_child_retry",
+        action="store_true",
+        help="Before falling back to retrieval country center, geocode predicted street/city qualified by the retrieval country.",
     )
     evaluate(parser.parse_args())

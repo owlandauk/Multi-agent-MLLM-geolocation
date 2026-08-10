@@ -160,6 +160,27 @@ class EvaluateRetrievalDiagnosticsTests(unittest.TestCase):
         self.assertEqual(diag["effective_max_country_top"], 0.55)
         geocode.assert_called_once_with("france")
 
+    def test_retrieval_country_fallback_retries_child_in_retrieval_country(self):
+        with patch.object(evaluate, "geocode", return_value=(48.8566, 2.3522)) as geocode:
+            coords, diag = evaluate._retrieval_country_fallback_coords(
+                {
+                    "city": "Paris",
+                    "street": "Unknown",
+                    "country_posterior": {"canada": 0.53, "france": 0.47},
+                    "country_retrieval_prior": {"france": 0.7, "germany": 0.2},
+                },
+                max_country_top=0.50,
+                min_prior_top=0.15,
+                same_continent_max_country_top=0.45,
+                cross_continent_max_country_top=0.55,
+                child_retry=True,
+            )
+
+        self.assertEqual(coords, (48.8566, 2.3522))
+        self.assertEqual(diag["child_retry_level"], "city")
+        self.assertEqual(diag["child_retry_query"], "Paris, france")
+        geocode.assert_called_once_with("Paris, france")
+
     def test_retrieval_country_fallback_protects_same_continent_child_geocode(self):
         with patch.object(evaluate, "geocode") as geocode:
             coords, diag = evaluate._retrieval_country_fallback_coords(
