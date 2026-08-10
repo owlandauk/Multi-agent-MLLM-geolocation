@@ -19,7 +19,7 @@ import re
 import math
 import numpy as np
 from models.mllm_client import MLLMClient
-from config import SL_N_SAMPLES, BETA, SL_MAX_NEW_TOKENS
+from config import SL_N_SAMPLES, BETA, SL_MAX_NEW_TOKENS, SL_SUPPORT_ALPHA
 
 
 _SCORE_RE = re.compile(
@@ -28,7 +28,6 @@ _SCORE_RE = re.compile(
 )
 _CONF_RE = re.compile(r"confidence[:\s]+(0\.\d+|1\.0|1)", re.IGNORECASE)
 _SUPPORT_ITEM_RE = re.compile(r"([^=;\n]+?)\s*=\s*([SCN])\b", re.IGNORECASE)
-_SUPPORT_ALPHA = 0.7
 
 
 def _parse_ct_alpha(text: str) -> tuple[float, float]:
@@ -59,7 +58,11 @@ def _match_hypothesis(label: str, hypotheses: list[str]) -> str | None:
     return None
 
 
-def _parse_support_scores(text: str, hypotheses: list[str]) -> dict[str, float] | None:
+def _parse_support_scores(
+    text: str,
+    hypotheses: list[str],
+    support_alpha: float = SL_SUPPORT_ALPHA,
+) -> dict[str, float] | None:
     """Parse GeoBayes Probability-Thought S/C/N support lines if present."""
     if not text or "=" not in text:
         return None
@@ -75,7 +78,7 @@ def _parse_support_scores(text: str, hypotheses: list[str]) -> dict[str, float] 
 
     c_map = {"S": 5.0, "N": 3.0, "C": 1.0}
     return {
-        hyp: _w_single(c_map.get(ratings.get(hyp, "N"), 3.0), _SUPPORT_ALPHA)
+        hyp: _w_single(c_map.get(ratings.get(hyp, "N"), 3.0), support_alpha)
         for hyp in hypotheses
     }
 

@@ -61,6 +61,14 @@ Reject or revise an experiment when:
 
 ## Step 1: Probability Thought Verification
 
+Status: tested on 1500 records and not promoted to full.
+
+Results:
+- `i14s48_verify_support_relgate_limit1500`, `VERIFY_SUPPORT_FORMAT=1`, default `SL_SUPPORT_ALPHA=0.7`: `5.47 / 14.87 / 25.00 / 43.40 / 69.60`.
+- `i14s48_verify_support_alpha035_relgate_limit1500`, `VERIFY_SUPPORT_FORMAT=1`, `SL_SUPPORT_ALPHA=0.35`: `5.27 / 14.73 / 26.13 / 45.67 / 71.40`.
+
+Conclusion: the current support-line prompt over-confidently reinforces wrong country hypotheses on Qwen2.5-VL-7B. Keep `SL_SUPPORT_ALPHA` for future ablations, but do not use `VERIFY_SUPPORT_FORMAT=1` as the main path unless the prompt/parser is redesigned and diagnostics show better calibration.
+
 Goal: make the verification stage closer to GeoBayes Fig. 1d by asking the model to rate the same evidence against every candidate as `S/C/N`, then using the centered likelihood parser already implemented in `SLModule`.
 
 Hypothesis: this should improve country posterior calibration because contradictions are represented explicitly instead of being inferred through separate free-form per-hypothesis ratings.
@@ -211,4 +219,3 @@ At the start of the next session:
 3. If the 1500 gate passes, launch full and stop after confirming it is running normally.
 4. If the gate fails, inspect diagnostics before moving to the next roadmap step.
 5. Record the result in this file or `docs/experiment-lessons-2026-08-08.md` before committing.
-

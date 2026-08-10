@@ -66,3 +66,17 @@
 ### The Pattern
 - Next time the target is balanced accuracy, prefer relation-aware fallback over a single global `0.55` gate.
 - Signal to recognize: the relation-aware run raises country/city/region while losing only noise-level continent accuracy (`0.07` points on the full run).
+
+## Support-Line Verification Needs Better Calibration
+
+### Context
+- `VERIFY_SUPPORT_FORMAT=1` was tested on 1500 records to mimic GeoBayes Probability Thought S/C/N verification.
+- With default `SL_SUPPORT_ALPHA=0.7`, the run reached `5.47 / 14.87 / 25.00 / 43.40 / 69.60`.
+- Weakening the mapping to `SL_SUPPORT_ALPHA=0.35` improved coarse accuracy to `5.27 / 14.73 / 26.13 / 45.67 / 71.40`, but still missed the current relation-aware baseline of `5.40 / 15.73 / 26.80 / 46.33 / 72.33`.
+
+### Root Cause / Core Insight
+- The support-line prompt reduced some child conflicts but made the country posterior too confident in wrong hypotheses. Lower alpha mitigates overconfidence, but the prompt still underperforms the free-form verification path on Qwen2.5-VL-7B.
+
+### The Pattern
+- Keep `SL_SUPPORT_ALPHA` as an ablation knob, but do not promote support-line verification unless diagnostics show better S/C/N calibration.
+- Signal to recognize: country posterior top mass and stable rate rise while country and continent accuracy both fall.

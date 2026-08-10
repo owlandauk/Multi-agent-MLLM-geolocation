@@ -130,6 +130,7 @@ IMAGE_SEARCH_STRICT_TEXT_QUERY = os.environ.get(
 # ── SL (single-source uncertainty) ────────────────────────────────────────────
 SL_N_SAMPLES    = 5      # samples per hypothesis for uncertainty estimation in SLModule
 SL_TEMPERATURE  = 0.8    # sampling temperature
+SL_SUPPORT_ALPHA = float(os.environ.get("SL_SUPPORT_ALPHA", "0.7"))
 
 # ── DST (Dempster-Shafer fusion) ───────────────────────────────────────────────
 DST_CONFLICT_THR = 0.5   # K > this → treat as high-conflict, apply cautious rule
