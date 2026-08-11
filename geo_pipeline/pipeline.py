@@ -54,7 +54,8 @@ from config import (
     ENABLE_CONTINENT_LEVEL,
     CONTINENT_REG_MIN_TOP, CONTINENT_REG_STRENGTH, CONTINENT_REG_FLOOR,
     WEB_SEARCH_TOP_THR, WEB_SEARCH_MARGIN_THR, WEB_SEARCH_REQUIRE_ENTITY,
-    WEB_SEARCH_LEVELS, WEB_SEARCH_UPDATE_MODE, WEB_SEARCH_VERIFY_MAX_NEW_TOKENS,
+    WEB_SEARCH_LEVELS, WEB_SEARCH_UPDATE_MODE, WEB_SEARCH_ACCEPT_MODE,
+    WEB_SEARCH_VERIFY_MAX_NEW_TOKENS,
     IMAGE_SEARCH_STRICT_TEXT_QUERY,
     FACTCHECK_MAX_NEW_TOKENS,
 )
@@ -573,6 +574,21 @@ def _web_verify_prompt(
         "Observation: <what the search evidence says>\n"
         "Support: <hypothesis_1>=S/C/N; <hypothesis_2>=S/C/N; ..."
     )
+
+
+def _accept_web_update(
+    level: str,
+    posterior: dict[str, float],
+    enhanced_posterior: dict[str, float],
+) -> bool:
+    """Gate noisy external search so it confirms rather than hijacks belief."""
+    if WEB_SEARCH_ACCEPT_MODE not in {"confirm_top", "confirm_current_top"}:
+        return True
+    if level != "country":
+        return True
+    if not posterior or not enhanced_posterior:
+        return False
+    return max(posterior, key=posterior.get) == max(enhanced_posterior, key=enhanced_posterior.get)
 
 
 def _parent_context_for_web(level: str, result: dict) -> str:
@@ -1285,6 +1301,8 @@ class GeoPipeline:
             ) = self._web_verify_update_level(
                 level, posterior, key_evidence, query, search_evidence, parent_context
             )
+            if not _accept_web_update(level, posterior, enhanced_posterior):
+                return None
             if image_search_evidence:
                 enhanced_evidence.append(f"image search ({level}): {image_search_evidence[:120]}")
             enhanced_evidence.append(f"web search ({level}): {text_search_evidence[:120]}")

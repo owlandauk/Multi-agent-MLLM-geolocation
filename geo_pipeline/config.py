@@ -131,6 +131,7 @@ WEB_SEARCH_LEVELS = tuple(
     if level.strip()
 )
 WEB_SEARCH_UPDATE_MODE = os.environ.get("WEB_SEARCH_UPDATE_MODE", "verify").lower()
+WEB_SEARCH_ACCEPT_MODE = os.environ.get("WEB_SEARCH_ACCEPT_MODE", "any").lower()
 WEB_SEARCH_VERIFY_MAX_NEW_TOKENS = int(os.environ.get("WEB_SEARCH_VERIFY_MAX_NEW_TOKENS", "160"))
 
 # Optional GeoBayes-style ImageSearch enhancement. When enabled, Google Vision

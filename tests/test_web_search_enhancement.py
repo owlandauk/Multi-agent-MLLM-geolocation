@@ -71,6 +71,27 @@ class WebSearchEnhancementTests(unittest.TestCase):
     def test_default_search_update_mode_uses_candidate_verification(self):
         self.assertEqual(pipeline.WEB_SEARCH_UPDATE_MODE, "verify")
 
+    def test_confirm_top_search_acceptance_rejects_country_hijack(self):
+        old_mode = pipeline.WEB_SEARCH_ACCEPT_MODE
+        pipeline.WEB_SEARCH_ACCEPT_MODE = "confirm_top"
+        try:
+            self.assertFalse(
+                pipeline._accept_web_update(
+                    "country",
+                    {"Spain": 0.51, "France": 0.49},
+                    {"Spain": 0.20, "France": 0.80},
+                )
+            )
+            self.assertTrue(
+                pipeline._accept_web_update(
+                    "country",
+                    {"Spain": 0.51, "France": 0.49},
+                    {"Spain": 0.75, "France": 0.25},
+                )
+            )
+        finally:
+            pipeline.WEB_SEARCH_ACCEPT_MODE = old_mode
+
     def test_pipeline_reruns_level_from_web_snippets(self):
         old_mode = pipeline.WEB_SEARCH_UPDATE_MODE
         pipeline.WEB_SEARCH_UPDATE_MODE = "rehypothesize"
