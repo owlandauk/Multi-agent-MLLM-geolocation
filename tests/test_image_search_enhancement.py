@@ -160,6 +160,21 @@ class ImageSearchEnhancementTests(unittest.TestCase):
         self.assertNotIn("Stock Photos", query)
         self.assertNotIn("DSC09447", query)
 
+    def test_query_compacts_lens_article_titles_to_place_entities(self):
+        evidence = (
+            "Best guess: Toronto weather takes nasty turn as rain forces GTA bus ...; "
+            "Toronto | History, Population, Climate, & Facts | Britannica\n"
+            "Entity 1: Toronto | History, Population, Climate, & Facts | Britannica\n"
+            "Entity 2: Unsupervised Pre-Training of Image Features on Non-Curated Data"
+        )
+
+        query = image_evidence_to_text_query("country", evidence)
+
+        self.assertIn("Toronto location country", query)
+        self.assertNotIn("weather takes", query)
+        self.assertNotIn("History, Population", query)
+        self.assertNotIn("Pre-Training", query)
+
     def test_query_drops_serpapi_topic_noise_without_location_clue(self):
         evidence = (
             "Best guess: BRIDE GROOM Sailor FOUND WEDDING PHOTO Color Snapshot ...\n"

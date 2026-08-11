@@ -406,9 +406,12 @@ def _image_query_clue(image_evidence: str, max_chars: int = 220) -> str:
     for idx, term in enumerate(_image_evidence_terms(image_evidence)):
         if _is_generic_image_term(term) or _is_web_noise_term(term):
             continue
-        terms.append((idx, term))
-    terms.sort(key=lambda item: (-_location_term_rank(item[1]), item[0]))
-    terms = [term for _, term in terms]
+        rank = _location_term_rank(term)
+        if rank <= 0:
+            continue
+        terms.append((idx, _clean_query_term(term), rank))
+    terms.sort(key=lambda item: (-item[2], item[0]))
+    terms = [term for _, term, _ in terms]
     clue = "; ".join(terms[:5])
     return clue[:max_chars]
 
@@ -454,6 +457,19 @@ def _location_term_rank(term: str) -> int:
     if _TITLEISH_RE.search(term):
         score += 5
     return score
+
+
+def _clean_query_term(term: str) -> str:
+    """Trim Lens result boilerplate into a compact searchable place/entity."""
+    clean = re.sub(r"\s+https?://\S+", "", str(term or "")).strip()
+    clean = re.sub(r"\s+\.\.\.$", "", clean).strip()
+    for sep in (" | ", " - Wikipedia"):
+        if sep in clean:
+            first = clean.split(sep, 1)[0].strip()
+            if first and re.search(r"[A-Za-zÀ-ÖØ-öø-ÿ]{3,}", first):
+                clean = first
+                break
+    return clean
 
 
 def image_evidence_to_text_query(level: str, image_evidence: str, parent_context: str = "") -> str:
