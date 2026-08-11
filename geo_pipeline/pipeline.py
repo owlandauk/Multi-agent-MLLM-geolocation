@@ -1010,6 +1010,7 @@ class GeoPipeline:
         result["country_retrieval_prior"] = _topk_posterior(diag.get("retrieval_prior", {}))
         result["country_prior_before_retrieval"] = _topk_posterior(diag.get("visual_prior", {}))
         result["country_retrieval_verify_action"] = bool(diag.get("verify_action_added"))
+        result["country_retrieval_verify_relation"] = diag.get("verify_action_relation")
 
     def _retrieval_verify_task(self, diag: dict) -> dict | None:
         """Turn retrieval countries into a normal country-level verification action.
@@ -1021,11 +1022,23 @@ class GeoPipeline:
         """
         if not RETRIEVAL_VERIFY_ACTION_ENABLED or not diag.get("applied"):
             return None
+        retrieval_prior = diag.get("retrieval_prior") or {}
+        visual_prior = diag.get("visual_prior") or {}
         relation = str(diag.get("relation") or "")
+        if relation in {"", "fixed", "missing_top"}:
+            visual_top, _ = _top_country_score(visual_prior)
+            retrieval_top, _ = _top_country_score(retrieval_prior)
+            if visual_top and retrieval_top:
+                if visual_top == retrieval_top:
+                    relation = "agree"
+                elif continent_of(visual_top) and continent_of(visual_top) == continent_of(retrieval_top):
+                    relation = "same_continent_conflict"
+                else:
+                    relation = "cross_continent_conflict"
+        diag["verify_action_relation"] = relation
         if RETRIEVAL_VERIFY_RELATIONS and relation not in RETRIEVAL_VERIFY_RELATIONS:
             return None
 
-        retrieval_prior = diag.get("retrieval_prior") or {}
         top_country, top_score = _top_country_score(retrieval_prior)
         if not top_country or top_score < RETRIEVAL_VERIFY_MIN_PRIOR_TOP:
             return None

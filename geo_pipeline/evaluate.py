@@ -445,6 +445,7 @@ def evaluate(args):
                 "country_retrieval_relation": pred.get("country_retrieval_relation"),
                 "country_prior_before_retrieval": pred.get("country_prior_before_retrieval"),
                 "country_retrieval_verify_action": bool(pred.get("country_retrieval_verify_action")),
+                "country_retrieval_verify_relation": pred.get("country_retrieval_verify_relation"),
                 "country_retrieval_anchored": bool(pred.get("country_retrieval_anchored")),
                 "country_retrieval_anchor": pred.get("country_retrieval_anchor"),
                 "country_web_enhanced": bool(pred.get("country_web_enhanced")),

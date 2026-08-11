@@ -130,7 +130,7 @@ class RetrievalPriorTests(unittest.TestCase):
             task = geo._retrieval_verify_task(
                 {
                     "applied": True,
-                    "relation": "cross_continent_conflict",
+                    "relation": "fixed",
                     "retrieval_prior": {"united states": 0.8, "canada": 0.2},
                     "visual_prior": {"france": 0.7, "germany": 0.3},
                 }
@@ -152,6 +152,7 @@ class RetrievalPriorTests(unittest.TestCase):
         self.assertEqual(task["source"], "retrieval_verify")
         self.assertIn("united states (0.80)", task["desc"])
         self.assertIn("Visual prior candidates", task["desc"])
+        self.assertEqual(task["bbox"], None)
         self.assertIsNone(skipped)
 
     def test_client_records_adaptive_effective_weight(self):
