@@ -43,6 +43,8 @@ class FakePipeline:
                 "country_retrieval_effective_weight": 0.10,
                 "country_retrieval_relation": "same_continent_conflict",
                 "country_prior_before_retrieval": {"france": 0.8, "germany": 0.2},
+                "country_retrieval_verify_action": True,
+                "country_retrieval_verify_executed": True,
             }
         ]
 
@@ -85,6 +87,8 @@ class EvaluateRetrievalDiagnosticsTests(unittest.TestCase):
 
         self.assertEqual(record["country_retrieval_effective_weight"], 0.10)
         self.assertEqual(record["country_retrieval_relation"], "same_continent_conflict")
+        self.assertTrue(record["country_retrieval_verify_action"])
+        self.assertTrue(record["country_retrieval_verify_executed"])
         self.assertEqual(record["pre_fallback_pred_country"], "France")
         self.assertEqual(record["pre_fallback_geocode_source"], "city_bare")
         self.assertAlmostEqual(record["pre_fallback_dist_km"], 0.0, places=3)

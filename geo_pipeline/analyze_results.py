@@ -151,6 +151,7 @@ def analyze(records: list[dict]) -> dict:
     country_child_backtracked = sum(1 for r in records if r.get("country_child_backtracked"))
     country_retrieval_enhanced = sum(1 for r in records if r.get("country_retrieval_enhanced"))
     country_retrieval_verify_action = sum(1 for r in records if r.get("country_retrieval_verify_action"))
+    country_retrieval_verify_executed = sum(1 for r in records if r.get("country_retrieval_verify_executed"))
     country_retrieval_anchored = sum(1 for r in records if r.get("country_retrieval_anchored"))
     country_web_enhanced = sum(1 for r in records if r.get("country_web_enhanced"))
     city_web_enhanced = sum(1 for r in records if r.get("city_web_enhanced"))
@@ -274,6 +275,7 @@ def analyze(records: list[dict]) -> dict:
         "country_child_backtracked_rate": round(100.0 * country_child_backtracked / total, 2) if total else 0.0,
         "country_retrieval_enhanced_rate": round(100.0 * country_retrieval_enhanced / total, 2) if total else 0.0,
         "country_retrieval_verify_action_rate": round(100.0 * country_retrieval_verify_action / total, 2) if total else 0.0,
+        "country_retrieval_verify_executed_rate": round(100.0 * country_retrieval_verify_executed / total, 2) if total else 0.0,
         "country_retrieval_anchored_rate": round(100.0 * country_retrieval_anchored / total, 2) if total else 0.0,
         "country_web_enhanced_rate": round(100.0 * country_web_enhanced / total, 2) if total else 0.0,
         "city_web_enhanced_rate": round(100.0 * city_web_enhanced / total, 2) if total else 0.0,
@@ -339,6 +341,7 @@ def analyze(records: list[dict]) -> dict:
             "geocode_source": _bucket_accuracy(records, lambda r: r.get("geocode_source") or "missing"),
             "country_retrieval_enhanced": _bucket_accuracy(records, lambda r: bool(r.get("country_retrieval_enhanced"))),
             "country_retrieval_verify_action": _bucket_accuracy(records, lambda r: bool(r.get("country_retrieval_verify_action"))),
+            "country_retrieval_verify_executed": _bucket_accuracy(records, lambda r: bool(r.get("country_retrieval_verify_executed"))),
             "country_retrieval_anchored": _bucket_accuracy(records, lambda r: bool(r.get("country_retrieval_anchored"))),
             "country_web_enhanced": _bucket_accuracy(records, lambda r: bool(r.get("country_web_enhanced"))),
             "city_web_enhanced": _bucket_accuracy(records, lambda r: bool(r.get("city_web_enhanced"))),
@@ -434,6 +437,11 @@ def _print_report(report: dict) -> None:
         print(f"Country retrieval prior rate: {report['country_retrieval_enhanced_rate']:.2f}%")
     if report.get("country_retrieval_verify_action_rate"):
         print(f"Country retrieval verify action rate: {report['country_retrieval_verify_action_rate']:.2f}%")
+    if report.get("country_retrieval_verify_executed_rate"):
+        print(
+            "Country retrieval verify executed rate: "
+            f"{report['country_retrieval_verify_executed_rate']:.2f}%"
+        )
     if report.get("country_retrieval_anchored_rate"):
         print(f"Country retrieval anchor rate: {report['country_retrieval_anchored_rate']:.2f}%")
     web_rates = report.get("web_enhanced_rate") or {
@@ -548,6 +556,7 @@ def _print_report(report: dict) -> None:
             "geocode_source",
             "country_retrieval_enhanced",
             "country_retrieval_verify_action",
+            "country_retrieval_verify_executed",
             "country_retrieval_anchored",
             "country_web_enhanced",
             "city_web_enhanced",

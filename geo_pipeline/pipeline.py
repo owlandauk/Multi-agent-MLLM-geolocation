@@ -1011,6 +1011,7 @@ class GeoPipeline:
         result["country_prior_before_retrieval"] = _topk_posterior(diag.get("visual_prior", {}))
         result["country_retrieval_verify_action"] = bool(diag.get("verify_action_added"))
         result["country_retrieval_verify_relation"] = diag.get("verify_action_relation")
+        result["country_retrieval_verify_executed"] = bool(diag.get("verify_action_executed"))
 
     def _retrieval_verify_task(self, diag: dict) -> dict | None:
         """Turn retrieval countries into a normal country-level verification action.
@@ -1140,7 +1141,7 @@ class GeoPipeline:
         initial_posterior: dict[str, float],
         initial_plan: list[dict],
         key_evidence: list[str],
-    ) -> tuple[dict, list[str], float, list[str], int]:
+    ) -> tuple[dict, list[str], float, list[str], int, list[str]]:
         """
         Run one hierarchy level.
 
@@ -1155,6 +1156,7 @@ class GeoPipeline:
         visual_delta = 0.0
         evidence_scores_all: list[dict[str, float]] = []
         observed_evidence: list[str] = []
+        executed_sources: list[str] = []
 
         while True:
             exhausted = len(pending) == 0
@@ -1171,6 +1173,8 @@ class GeoPipeline:
             else:
                 task_idx = self.pomdp.select_action(posterior, pending, level, step)
             task = pending.pop(task_idx)
+            if task.get("source"):
+                executed_sources.append(str(task["source"]))
 
             # Verify: get evidence description from MLLM
             hyps = list(posterior.keys())
@@ -1194,7 +1198,7 @@ class GeoPipeline:
 
             step += 1
 
-        return posterior, key_evidence, visual_delta, observed_evidence, step
+        return posterior, key_evidence, visual_delta, observed_evidence, step, executed_sources
 
     def _web_verify_update_level(
         self,
@@ -1288,7 +1292,7 @@ class GeoPipeline:
 
         context = _web_enhance_context(level, posterior, query, search_evidence, parent_context)
         prior, plan, raw_resp = self._hypothesize(image, level, context)
-        enhanced_posterior, enhanced_evidence, web_delta, observed_evidence, _ = self._run_level(
+        enhanced_posterior, enhanced_evidence, web_delta, observed_evidence, _, _ = self._run_level(
             image, level, prior, plan, key_evidence
         )
         if image_search_evidence:
@@ -1333,19 +1337,21 @@ class GeoPipeline:
                 if retrieval_task is not None:
                     plan = [*plan, retrieval_task]
                     retrieval_diag["verify_action_added"] = True
-                self._record_retrieval_diag(result, retrieval_diag)
             result[f"{level}_raw_response"] = raw_resp
 
-            posterior, key_evidence, visual_delta, level_evidence, level_steps = self._run_level(
+            posterior, key_evidence, visual_delta, level_evidence, level_steps, level_task_sources = self._run_level(
                 image, level, prior, plan, key_evidence
             )
+            if level == "country":
+                retrieval_diag["verify_action_executed"] = "retrieval_verify" in level_task_sources
+                self._record_retrieval_diag(result, retrieval_diag)
 
             if level == "country" and _should_replace_country(posterior):
                 for _ in range(COUNTRY_REPLACE_ATTEMPTS):
                     replace_context = _replace_context(level, posterior, key_evidence)
                     prior, plan, raw_resp = self._hypothesize(image, level, replace_context)
                     result[f"{level}_raw_response"] = raw_resp
-                    posterior, key_evidence, visual_delta, level_evidence, level_steps = self._run_level(
+                    posterior, key_evidence, visual_delta, level_evidence, level_steps, _ = self._run_level(
                         image, level, prior, plan, key_evidence
                     )
                     result["country_replaced"] = True
@@ -1438,7 +1444,15 @@ class GeoPipeline:
         level: str,
         contexts: list[str],
         key_evidence: list[list[str]],
-    ) -> tuple[list[str], list[dict[str, float]], list[float], list[list[str]], list[int], list[dict]]:
+    ) -> tuple[
+        list[str],
+        list[dict[str, float]],
+        list[float],
+        list[list[str]],
+        list[int],
+        list[dict],
+        list[list[str]],
+    ]:
         """Run one hierarchy level for a batch and update key_evidence in place."""
         n = len(images)
         hyp_messages = [_hypothesize_prompt(images[i], level, contexts[i]) for i in range(n)]
@@ -1534,6 +1548,7 @@ class GeoPipeline:
         ev_scores_all = [[] for _ in range(n)]
         visual_deltas = [0.0] * n
         observed_evidence = [[] for _ in range(n)]
+        executed_sources = [[] for _ in range(n)]
 
         while True:
             active = [
@@ -1577,6 +1592,9 @@ class GeoPipeline:
                     task_choices[i] = min(idx, len(pending[i]) - 1)
 
             tasks = {i: pending[i].pop(task_choices[i]) for i in active}
+            for i, task in tasks.items():
+                if task.get("source"):
+                    executed_sources[i].append(str(task["source"]))
 
             verify_msgs = [
                 _verify_prompt(images[i], tasks[i], list(posteriors[i].keys()), level)
@@ -1608,7 +1626,15 @@ class GeoPipeline:
 
                 steps[i] += 1
 
-        return hyp_responses, posteriors, visual_deltas, observed_evidence, steps, retrieval_diags
+        return (
+            hyp_responses,
+            posteriors,
+            visual_deltas,
+            observed_evidence,
+            steps,
+            retrieval_diags,
+            executed_sources,
+        )
 
     def predict_batch(self, images: list) -> list[dict]:
         """
@@ -1636,7 +1662,15 @@ class GeoPipeline:
             subset_images = [images[i] for i in level_indices]
             subset_contexts = [contexts[i] for i in level_indices]
             subset_key_evidence = [key_evidence[i] for i in level_indices]
-            raw_responses, posteriors_subset, deltas_subset, evidence_subset, steps_subset, retrieval_diags_subset = self._run_level_batch(
+            (
+                raw_responses,
+                posteriors_subset,
+                deltas_subset,
+                evidence_subset,
+                steps_subset,
+                retrieval_diags_subset,
+                task_sources_subset,
+            ) = self._run_level_batch(
                 subset_images, level, subset_contexts, subset_key_evidence
             )
             posteriors_by_idx = {
@@ -1657,6 +1691,9 @@ class GeoPipeline:
             retrieval_diag_by_idx = {
                 idx: diag for idx, diag in zip(level_indices, retrieval_diags_subset)
             }
+            task_sources_by_idx = {
+                idx: sources for idx, sources in zip(level_indices, task_sources_subset)
+            }
 
             # Replace: only regenerate the country candidate set when belief is
             # genuinely weak and nearly tied. Marginally unstable but plausible
@@ -1672,7 +1709,15 @@ class GeoPipeline:
                         for i in unstable
                     ]
                     replace_key_evidence = [key_evidence[i] for i in unstable]
-                    repl_raw, repl_posts, repl_deltas, repl_evidence, repl_steps, _ = self._run_level_batch(
+                    (
+                        repl_raw,
+                        repl_posts,
+                        repl_deltas,
+                        repl_evidence,
+                        repl_steps,
+                        _,
+                        _,
+                    ) = self._run_level_batch(
                         replace_images, level, replace_contexts, replace_key_evidence
                     )
                     for idx, raw, post, delta, evidence in zip(
@@ -1735,7 +1780,11 @@ class GeoPipeline:
                 results[i][f"{level}_raw_response"] = raw_by_idx[i]
 
                 if level == "country":
-                    self._record_retrieval_diag(results[i], retrieval_diag_by_idx.get(i, {}))
+                    retrieval_diag = retrieval_diag_by_idx.get(i, {})
+                    retrieval_diag["verify_action_executed"] = (
+                        "retrieval_verify" in task_sources_by_idx.get(i, [])
+                    )
+                    self._record_retrieval_diag(results[i], retrieval_diag)
                     posterior, regularized = _regularize_country_by_continent(
                         posterior, results[i].get("continent_posterior", {})
                     )
