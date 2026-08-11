@@ -67,6 +67,8 @@ class EvaluateRetrievalDiagnosticsTests(unittest.TestCase):
             retrieval_country_min_prior_top=0.15,
             retrieval_country_same_continent_max_country_top=None,
             retrieval_country_cross_continent_max_country_top=None,
+            retrieval_country_child_retry=False,
+            retrieval_country_child_retry_relations=None,
             out=out_path,
         )
         try:
@@ -179,6 +181,50 @@ class EvaluateRetrievalDiagnosticsTests(unittest.TestCase):
         self.assertEqual(coords, (48.8566, 2.3522))
         self.assertEqual(diag["child_retry_level"], "city")
         self.assertEqual(diag["child_retry_query"], "Paris, france")
+        geocode.assert_called_once_with("Paris, france")
+
+    def test_retrieval_country_fallback_skips_child_retry_for_unlisted_relation(self):
+        with patch.object(evaluate, "geocode", return_value=(46.2276, 2.2137)) as geocode:
+            coords, diag = evaluate._retrieval_country_fallback_coords(
+                {
+                    "city": "Paris",
+                    "street": "Unknown",
+                    "country_posterior": {"canada": 0.53, "france": 0.47},
+                    "country_retrieval_prior": {"france": 0.7, "germany": 0.2},
+                },
+                max_country_top=0.50,
+                min_prior_top=0.15,
+                same_continent_max_country_top=0.45,
+                cross_continent_max_country_top=0.55,
+                child_retry=True,
+                child_retry_relations={"same_continent"},
+            )
+
+        self.assertEqual(coords, (46.2276, 2.2137))
+        self.assertFalse(diag["child_retry_allowed"])
+        self.assertNotIn("child_retry_level", diag)
+        geocode.assert_called_once_with("france")
+
+    def test_retrieval_country_fallback_allows_child_retry_for_listed_relation(self):
+        with patch.object(evaluate, "geocode", return_value=(48.8566, 2.3522)) as geocode:
+            coords, diag = evaluate._retrieval_country_fallback_coords(
+                {
+                    "city": "Paris",
+                    "street": "Unknown",
+                    "country_posterior": {"germany": 0.43, "france": 0.42},
+                    "country_retrieval_prior": {"france": 0.7, "germany": 0.2},
+                },
+                max_country_top=0.50,
+                min_prior_top=0.15,
+                same_continent_max_country_top=0.45,
+                cross_continent_max_country_top=0.55,
+                child_retry=True,
+                child_retry_relations={"same_continent"},
+            )
+
+        self.assertEqual(coords, (48.8566, 2.3522))
+        self.assertTrue(diag["child_retry_allowed"])
+        self.assertEqual(diag["child_retry_level"], "city")
         geocode.assert_called_once_with("Paris, france")
 
     def test_retrieval_country_fallback_protects_same_continent_child_geocode(self):

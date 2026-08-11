@@ -190,6 +190,12 @@ def main() -> int:
     parser.add_argument("--retrieval_country_same_continent_max_country_top", type=float, default=None)
     parser.add_argument("--retrieval_country_cross_continent_max_country_top", type=float, default=None)
     parser.add_argument("--retrieval_country_child_retry", action="store_true")
+    parser.add_argument(
+        "--retrieval_country_child_retry_relations",
+        nargs="+",
+        default=None,
+        choices=("same_continent", "cross_continent", "unknown_visual_continent", "unknown"),
+    )
     parser.add_argument("--records_jsonl", default="results/experiment_runs.jsonl")
     parser.add_argument("--records_csv", default="results/experiment_runs.csv")
     args = parser.parse_args()
@@ -244,6 +250,9 @@ def main() -> int:
             ]
         if args.retrieval_country_child_retry:
             cmd.append("--retrieval_country_child_retry")
+        if args.retrieval_country_child_retry_relations:
+            cmd.append("--retrieval_country_child_retry_relations")
+            cmd += list(args.retrieval_country_child_retry_relations)
 
     env_snapshot = {key: os.environ.get(key) for key in ENV_KEYS if os.environ.get(key) is not None}
     start_wall = time.time()

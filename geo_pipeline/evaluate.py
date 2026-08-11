@@ -204,6 +204,7 @@ def _retrieval_country_fallback_coords(
     same_continent_max_country_top: float | None = None,
     cross_continent_max_country_top: float | None = None,
     child_retry: bool = False,
+    child_retry_relations: set[str] | None = None,
 ) -> tuple[tuple[float, float] | None, dict]:
     """Fallback to retrieval top-country geocoding when posterior is weak.
 
@@ -254,7 +255,11 @@ def _retrieval_country_fallback_coords(
         diag["prior_top"] = prior_top
         return None, diag
 
-    if child_retry:
+    child_retry_allowed = child_retry and (
+        child_retry_relations is None or relation in child_retry_relations
+    )
+    diag["child_retry_allowed"] = child_retry_allowed
+    if child_retry_allowed:
         for level in ("street", "city"):
             name = pred.get(level)
             if not name or name == "Unknown":
@@ -372,6 +377,9 @@ def evaluate(args):
                     args.retrieval_country_same_continent_max_country_top,
                     args.retrieval_country_cross_continent_max_country_top,
                     args.retrieval_country_child_retry,
+                    set(args.retrieval_country_child_retry_relations)
+                    if args.retrieval_country_child_retry_relations
+                    else None,
                 )
                 if fallback_coords is not None:
                     retrieval_country_fallback["previous_geocode_source"] = geocode_source
@@ -573,5 +581,12 @@ if __name__ == "__main__":
         "--retrieval_country_child_retry",
         action="store_true",
         help="Before falling back to retrieval country center, geocode predicted street/city qualified by the retrieval country.",
+    )
+    parser.add_argument(
+        "--retrieval_country_child_retry_relations",
+        nargs="+",
+        default=None,
+        choices=("same_continent", "cross_continent", "unknown_visual_continent", "unknown"),
+        help="Limit child geocode retries to specific visual-vs-retrieval country continent relations.",
     )
     evaluate(parser.parse_args())
