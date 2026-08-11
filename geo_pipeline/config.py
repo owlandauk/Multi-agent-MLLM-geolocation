@@ -88,6 +88,21 @@ RETRIEVAL_COUNTRY_ANCHOR_MIN_PRIOR_TOP = float(
 RETRIEVAL_COUNTRY_ANCHOR_WEIGHT = float(
     os.environ.get("RETRIEVAL_COUNTRY_ANCHOR_WEIGHT", "1.0")
 )
+RETRIEVAL_VERIFY_ACTION_ENABLED = os.environ.get(
+    "RETRIEVAL_VERIFY_ACTION_ENABLED", "0"
+).lower() in {"1", "true", "yes", "on"}
+RETRIEVAL_VERIFY_MIN_PRIOR_TOP = float(
+    os.environ.get("RETRIEVAL_VERIFY_MIN_PRIOR_TOP", "0.55")
+)
+RETRIEVAL_VERIFY_RELATIONS = tuple(
+    relation.strip()
+    for relation in os.environ.get(
+        "RETRIEVAL_VERIFY_RELATIONS",
+        "same_continent_conflict,cross_continent_conflict",
+    ).split(",")
+    if relation.strip()
+)
+RETRIEVAL_VERIFY_TOP_K = int(os.environ.get("RETRIEVAL_VERIFY_TOP_K", "3"))
 
 # ── Continent-first country calibration ──────────────────────────────────────
 # The continent stage is a weak prior for country inference. It reduces obvious

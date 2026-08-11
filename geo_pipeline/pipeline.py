@@ -49,6 +49,8 @@ from config import (
     RETRIEVAL_PRIOR_CROSS_CONTINENT_WEIGHT,
     RETRIEVAL_COUNTRY_ANCHOR_ENABLED, RETRIEVAL_COUNTRY_ANCHOR_MAX_COUNTRY_TOP,
     RETRIEVAL_COUNTRY_ANCHOR_MIN_PRIOR_TOP, RETRIEVAL_COUNTRY_ANCHOR_WEIGHT,
+    RETRIEVAL_VERIFY_ACTION_ENABLED, RETRIEVAL_VERIFY_MIN_PRIOR_TOP,
+    RETRIEVAL_VERIFY_RELATIONS, RETRIEVAL_VERIFY_TOP_K,
     ENABLE_CONTINENT_LEVEL,
     CONTINENT_REG_MIN_TOP, CONTINENT_REG_STRENGTH, CONTINENT_REG_FLOOR,
     WEB_SEARCH_TOP_THR, WEB_SEARCH_MARGIN_THR, WEB_SEARCH_REQUIRE_ENTITY,
@@ -1007,6 +1009,46 @@ class GeoPipeline:
         result["country_retrieval_relation"] = diag.get("relation")
         result["country_retrieval_prior"] = _topk_posterior(diag.get("retrieval_prior", {}))
         result["country_prior_before_retrieval"] = _topk_posterior(diag.get("visual_prior", {}))
+        result["country_retrieval_verify_action"] = bool(diag.get("verify_action_added"))
+
+    def _retrieval_verify_task(self, diag: dict) -> dict | None:
+        """Turn retrieval countries into a normal country-level verification action.
+
+        This keeps retrieval inside the GeoBayes loop: POMDP chooses the action,
+        SL scores the resulting evidence, and DST/Bayes fuses it with visual
+        evidence. It is deliberately gated so weak GeoCLIP priors do not add
+        noisy extra prompts.
+        """
+        if not RETRIEVAL_VERIFY_ACTION_ENABLED or not diag.get("applied"):
+            return None
+        relation = str(diag.get("relation") or "")
+        if RETRIEVAL_VERIFY_RELATIONS and relation not in RETRIEVAL_VERIFY_RELATIONS:
+            return None
+
+        retrieval_prior = diag.get("retrieval_prior") or {}
+        top_country, top_score = _top_country_score(retrieval_prior)
+        if not top_country or top_score < RETRIEVAL_VERIFY_MIN_PRIOR_TOP:
+            return None
+
+        candidates = sorted(
+            retrieval_prior.items(), key=lambda item: -float(item[1])
+        )[: max(1, RETRIEVAL_VERIFY_TOP_K)]
+        candidate_text = ", ".join(
+            f"{country} ({float(score):.2f})" for country, score in candidates
+        )
+        visual_text = _format_top_candidates(diag.get("visual_prior", {}), 3)
+        return {
+            "desc": (
+                "Check GeoCLIP retrieval country candidates against visible evidence. "
+                f"Retrieval candidates: {candidate_text}. "
+                f"Visual prior candidates before retrieval: {visual_text}. "
+                "Look for language/script, road signs, driving side, architecture, "
+                "vegetation, climate, terrain, and street furniture that supports or "
+                "contradicts the retrieval candidates."
+            ),
+            "bbox": None,
+            "source": "retrieval_verify",
+        }
 
     def _hypothesize(self, image: Image.Image, level: str, context: str = "") -> tuple[dict, list, str]:
         """Returns (prior_dict, verification_plan_list, raw_response)."""
@@ -1274,6 +1316,10 @@ class GeoPipeline:
             prior, plan, raw_resp = self._hypothesize(image, level, context)
             if level == "country":
                 prior, retrieval_diag = self._apply_country_retrieval_prior(image, prior)
+                retrieval_task = self._retrieval_verify_task(retrieval_diag)
+                if retrieval_task is not None:
+                    plan = [*plan, retrieval_task]
+                    retrieval_diag["verify_action_added"] = True
                 self._record_retrieval_diag(result, retrieval_diag)
             result[f"{level}_raw_response"] = raw_resp
 
@@ -1464,6 +1510,10 @@ class GeoPipeline:
                 priors[idx], retrieval_diags[idx] = self._apply_country_retrieval_prior(
                     images[idx], priors[idx]
                 )
+                retrieval_task = self._retrieval_verify_task(retrieval_diags[idx])
+                if retrieval_task is not None:
+                    plans[idx] = [*plans[idx], retrieval_task]
+                    retrieval_diags[idx]["verify_action_added"] = True
 
         posteriors = [dict(p) for p in priors]
         pending = [list(pl) for pl in plans]

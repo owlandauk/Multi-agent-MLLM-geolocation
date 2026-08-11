@@ -100,6 +100,60 @@ class RetrievalPriorTests(unittest.TestCase):
         self.assertEqual(result["country_retrieval_prior"], {"germany": 1.0})
         self.assertIn("germany", result["country_posterior"])
 
+    def test_retrieval_verify_task_is_disabled_by_default(self):
+        old_enabled = pipeline.RETRIEVAL_VERIFY_ACTION_ENABLED
+        pipeline.RETRIEVAL_VERIFY_ACTION_ENABLED = False
+        try:
+            geo = pipeline.GeoPipeline(FakeMllm())
+            task = geo._retrieval_verify_task(
+                {
+                    "applied": True,
+                    "relation": "cross_continent_conflict",
+                    "retrieval_prior": {"united states": 1.0},
+                    "visual_prior": {"france": 0.7, "germany": 0.3},
+                }
+            )
+        finally:
+            pipeline.RETRIEVAL_VERIFY_ACTION_ENABLED = old_enabled
+
+        self.assertIsNone(task)
+
+    def test_retrieval_verify_task_uses_high_confidence_conflicts(self):
+        old_enabled = pipeline.RETRIEVAL_VERIFY_ACTION_ENABLED
+        old_min_prior = pipeline.RETRIEVAL_VERIFY_MIN_PRIOR_TOP
+        old_relations = pipeline.RETRIEVAL_VERIFY_RELATIONS
+        pipeline.RETRIEVAL_VERIFY_ACTION_ENABLED = True
+        pipeline.RETRIEVAL_VERIFY_MIN_PRIOR_TOP = 0.55
+        pipeline.RETRIEVAL_VERIFY_RELATIONS = ("cross_continent_conflict",)
+        try:
+            geo = pipeline.GeoPipeline(FakeMllm())
+            task = geo._retrieval_verify_task(
+                {
+                    "applied": True,
+                    "relation": "cross_continent_conflict",
+                    "retrieval_prior": {"united states": 0.8, "canada": 0.2},
+                    "visual_prior": {"france": 0.7, "germany": 0.3},
+                }
+            )
+            skipped = geo._retrieval_verify_task(
+                {
+                    "applied": True,
+                    "relation": "same_continent_conflict",
+                    "retrieval_prior": {"germany": 0.8, "france": 0.2},
+                    "visual_prior": {"france": 0.7, "spain": 0.3},
+                }
+            )
+        finally:
+            pipeline.RETRIEVAL_VERIFY_ACTION_ENABLED = old_enabled
+            pipeline.RETRIEVAL_VERIFY_MIN_PRIOR_TOP = old_min_prior
+            pipeline.RETRIEVAL_VERIFY_RELATIONS = old_relations
+
+        self.assertIsNotNone(task)
+        self.assertEqual(task["source"], "retrieval_verify")
+        self.assertIn("united states (0.80)", task["desc"])
+        self.assertIn("Visual prior candidates", task["desc"])
+        self.assertIsNone(skipped)
+
     def test_client_records_adaptive_effective_weight(self):
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
             f.write('{"img1": [{"country": "United States", "score": 1.0}]}')
