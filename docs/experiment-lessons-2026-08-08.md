@@ -80,3 +80,18 @@
 ### The Pattern
 - Keep `SL_SUPPORT_ALPHA` as an ablation knob, but do not promote support-line verification unless diagnostics show better S/C/N calibration.
 - Signal to recognize: country posterior top mass and stable rate rise while country and continent accuracy both fall.
+
+## Strict Web/Image Search Is Still Too Noisy
+
+### Context
+- `i14s48_strict_lens_country_cap250_cross060_same045_limit1500` enabled SerpAPI Google Lens plus Tavily at country level only. It reached `5.13 / 15.40 / 25.73 / 45.20 / 73.13`, below the no-web relation-aware baseline.
+- The enhanced buckets were much worse than non-enhanced records: `country_web_enhanced=True` had `23.60%` country and `49.44%` continent, and `country_image_search_enhanced=True` had `21.28%` country and `44.68%` continent.
+- A confirmation-only guard, `WEB_SEARCH_ACCEPT_MODE=confirm_top`, reduced accepted search rows but still underperformed at `5.33 / 14.80 / 25.60 / 45.47 / 72.07`.
+
+### Root Cause / Core Insight
+- Lens/Tavily often returned pages for visually similar web images, stock media, news articles, museum artifacts, or Flickr context rather than the actual YFCC location. The search signal was strongest exactly on hard, low-confidence samples, where false web entities are especially damaging.
+- When search changed the country prediction, it was usually harmful. When it merely confirmed the existing country top, it was less harmful, but the accepted set remained too weak to improve aggregate metrics.
+
+### The Pattern
+- Do not run full with current SerpAPI/Tavily search settings. Treat web/image search as a case-study feature unless a future gate proves that enhanced rows outperform comparable non-enhanced low-confidence rows.
+- Signal to recognize: accepted search rows have lower country/continent accuracy than the full population, even when the global continent number looks superficially close.
