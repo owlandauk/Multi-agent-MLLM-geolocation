@@ -19,7 +19,13 @@ import re
 import math
 import numpy as np
 from models.mllm_client import MLLMClient
-from config import SL_N_SAMPLES, BETA, SL_MAX_NEW_TOKENS, SL_SUPPORT_ALPHA
+from config import (
+    SL_N_SAMPLES,
+    BETA,
+    SL_MAX_NEW_TOKENS,
+    SL_SUPPORT_ALPHA,
+    SL_DISABLE_LEVELS,
+)
 
 
 _SCORE_RE = re.compile(
@@ -114,6 +120,23 @@ class SLModule:
             }
         ]
 
+    def _reduce(self, responses: list[str], shrink: bool) -> float:
+        """Reduce N sampled responses to a single W_sl weight.
+
+        When shrink is False (SL disabled at this level), we drop the variance
+        penalty and return the plain GeoBayes support weight exp[α·β·(c−3)].
+        """
+        parsed = [_parse_ct_alpha(r) for r in responses]
+        cs = np.array([p[0] for p in parsed])
+        alphas = np.array([p[1] for p in parsed])
+        c_mean = cs.mean()
+        a_mean = alphas.mean()
+        if shrink:
+            uncertainty_factor = max(0.3, 1.0 - self.lam * cs.std())
+        else:
+            uncertainty_factor = 1.0
+        return math.exp(a_mean * BETA * (c_mean - 3) * uncertainty_factor)
+
     def score(
         self,
         evidence_desc: str,
@@ -129,30 +152,21 @@ class SLModule:
             return direct_scores
 
         from config import MAX_SL_BATCH_SIZE
+        disabled = level.lower() in SL_DISABLE_LEVELS
+        n = 1 if disabled else self.n_samples
         messages_list = [self._make_prompt(evidence_desc, hyp, level) for hyp in hypotheses]
 
         all_responses: list[list[str]] = []
         for i in range(0, len(messages_list), MAX_SL_BATCH_SIZE):
             batch = messages_list[i:i + MAX_SL_BATCH_SIZE]
             all_responses.extend(
-                self.mllm.batch_sample_n(batch, n=self.n_samples, max_new_tokens=SL_MAX_NEW_TOKENS)
+                self.mllm.batch_sample_n(batch, n=n, max_new_tokens=SL_MAX_NEW_TOKENS)
             )
 
-        scores = {}
-        for hyp, responses in zip(hypotheses, all_responses):
-            parsed = [_parse_ct_alpha(r) for r in responses]
-            cs     = np.array([p[0] for p in parsed])
-            alphas = np.array([p[1] for p in parsed])
-
-            c_mean  = cs.mean()
-            c_std   = cs.std()
-            a_mean  = alphas.mean()
-
-            uncertainty_factor = max(0.3, 1.0 - self.lam * c_std)
-            w = math.exp(a_mean * BETA * (c_mean - 3) * uncertainty_factor)
-            scores[hyp] = w
-
-        return scores
+        return {
+            hyp: self._reduce(responses, shrink=not disabled)
+            for hyp, responses in zip(hypotheses, all_responses)
+        }
 
     def score_many(
         self,
@@ -171,6 +185,8 @@ class SLModule:
         we fire one giant forward with sum(M_i) × n_samples inputs.
         """
         from config import MAX_SL_BATCH_SIZE
+        disabled = level.lower() in SL_DISABLE_LEVELS
+        n = 1 if disabled else self.n_samples
 
         results: list[dict[str, float] | None] = []
         flat_msgs: list = []
@@ -191,22 +207,12 @@ class SLModule:
         for i in range(0, len(flat_msgs), MAX_SL_BATCH_SIZE):
             batch = flat_msgs[i:i + MAX_SL_BATCH_SIZE]
             flat_responses.extend(
-                self.mllm.batch_sample_n(batch, n=self.n_samples, max_new_tokens=SL_MAX_NEW_TOKENS)
+                self.mllm.batch_sample_n(batch, n=n, max_new_tokens=SL_MAX_NEW_TOKENS)
             )
 
         for (item_idx, hyp), responses in zip(owners, flat_responses):
             if results[item_idx] is None:
                 results[item_idx] = {}
-            parsed = [_parse_ct_alpha(r) for r in responses]
-            cs     = np.array([p[0] for p in parsed])
-            alphas = np.array([p[1] for p in parsed])
-
-            c_mean = cs.mean()
-            c_std  = cs.std()
-            a_mean = alphas.mean()
-
-            uncertainty_factor = max(0.3, 1.0 - self.lam * c_std)
-            w = math.exp(a_mean * BETA * (c_mean - 3) * uncertainty_factor)
-            results[item_idx][hyp] = w
+            results[item_idx][hyp] = self._reduce(responses, shrink=not disabled)
 
         return [dict(r or {}) for r in results]

@@ -147,9 +147,35 @@ IMAGE_SEARCH_STRICT_TEXT_QUERY = os.environ.get(
 SL_N_SAMPLES    = 5      # samples per hypothesis for uncertainty estimation in SLModule
 SL_TEMPERATURE  = 0.8    # sampling temperature
 SL_SUPPORT_ALPHA = float(os.environ.get("SL_SUPPORT_ALPHA", "0.7"))
+# Levels where SL is disabled: single-sample, no variance shrinkage → plain
+# GeoBayes support weight. 7B is often low-variance-and-wrong at coarse levels,
+# so SL's shrink-when-unsure assumption misfires there. Empty = SL everywhere.
+SL_DISABLE_LEVELS = tuple(
+    level.strip().lower()
+    for level in os.environ.get("SL_DISABLE_LEVELS", "").split(",")
+    if level.strip()
+)
 
 # ── DST (Dempster-Shafer fusion) ───────────────────────────────────────────────
 DST_CONFLICT_THR = 0.5   # K > this → treat as high-conflict, apply cautious rule
+# Levels where the Yager DST fallback is disabled (always use the faithful
+# GeoBayes multiplicative update). DST's L1-normalize flattens the strong
+# North-America-vs-Europe contrast that coarse decisions need. Empty = fallback
+# may fire at any level when conflict exceeds DST_CONFLICT_THR.
+DST_DISABLE_LEVELS = tuple(
+    level.strip().lower()
+    for level in os.environ.get("DST_DISABLE_LEVELS", "").split(",")
+    if level.strip()
+)
+# Country-prior debias (attack point: kill US over-prediction). At the country
+# level, divide the prior by an empirical country frequency raised to gamma:
+# P'(l) ∝ P(l) / freq(l)^gamma  (= log-space subtraction gamma·log freq(l),
+# Zadeh-safe under multiplicative update). gamma=0 disables. The divisor is a
+# JSON {country: frequency} loaded from COUNTRY_PRIOR_FILE — swappable so the
+# divisor can be YFCC4k-empirical, a train-split freq, or a population prior
+# without code changes. Missing file or gamma=0 → no-op.
+COUNTRY_PRIOR_DEBIAS_GAMMA = float(os.environ.get("COUNTRY_PRIOR_DEBIAS_GAMMA", "0"))
+COUNTRY_PRIOR_FILE = os.environ.get("COUNTRY_PRIOR_FILE", "")
 
 # ── POMDP ─────────────────────────────────────────────────────────────────────
 POMDP_MAX_STEPS = 8      # full experiments
@@ -161,11 +187,25 @@ POMDP_EIG_LEVELS = tuple(
     if level.strip()
 )
 POMDP_TOP_HYPOTHESES = int(os.environ.get("POMDP_TOP_HYPOTHESES", "5"))
+# Degrade POMDP to a fixed climate-first action order at coarse levels
+# (continent/country): consume the verification tasks in their listed order
+# (climate/hemisphere/script first, per GeoCoT) instead of adaptive selection.
+# Rationale: myopic action-selection chases entropy a 7B can't resolve and
+# regressed v7-v9; anchor the coarse prior before US-biasing city detail.
+# Empty = no fixed order (POMDP selects adaptively at all levels).
+POMDP_COARSE_FIXED_ORDER = tuple(
+    level.strip().lower()
+    for level in os.environ.get("POMDP_COARSE_FIXED_ORDER", "").split(",")
+    if level.strip()
+)
 POMDP_MAX_ACTIONS = int(os.environ.get("POMDP_MAX_ACTIONS", "6"))
 POMDP_OBS_SAMPLES = int(os.environ.get("POMDP_OBS_SAMPLES", "3"))
 POMDP_OBS_SMOOTHING = float(os.environ.get("POMDP_OBS_SMOOTHING", "0.25"))
 POMDP_ACTION_COST = float(os.environ.get("POMDP_ACTION_COST", "0.0"))
 POMDP_REWARD_MODE = os.environ.get("POMDP_REWARD_MODE", "entropy").lower()
+POMDP_ENTROPY_WEIGHT = float(os.environ.get("POMDP_ENTROPY_WEIGHT", "1.0"))
+POMDP_MAP_GAIN_WEIGHT = float(os.environ.get("POMDP_MAP_GAIN_WEIGHT", "1.0"))
+POMDP_MARGIN_GAIN_WEIGHT = float(os.environ.get("POMDP_MARGIN_GAIN_WEIGHT", "0.5"))
 
 # ── Evaluation thresholds (km) ─────────────────────────────────────────────────
 EVAL_THRESHOLDS = [1, 25, 200, 750, 2500]

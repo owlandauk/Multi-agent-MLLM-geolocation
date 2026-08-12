@@ -88,9 +88,9 @@ _COUNTRY_CUE_PROMPTS = [
 ]
 
 _COUNTRY_FIXED_TASKS = [
+    {"desc": "Check vegetation, climate, terrain, season, and hemisphere cues", "bbox": None},
     {"desc": "Check visible language, script, road signs, and storefront text", "bbox": None},
     {"desc": "Check road layout, traffic direction, lane markings, and license plates", "bbox": None},
-    {"desc": "Check vegetation, climate, terrain, season, and hemisphere cues", "bbox": None},
     {"desc": "Check architecture, building materials, utilities, and street furniture", "bbox": None},
     {"desc": "Check landscape context such as coast, mountains, rural setting, or urban density", "bbox": None},
 ]
@@ -1182,6 +1182,8 @@ class GeoPipeline:
             # POMDP: select best action (skip if only one task)
             if len(pending) == 1:
                 task_idx = 0
+            elif self.pomdp.use_fixed_order_for(level):
+                task_idx = 0  # fixed climate-first order: consume tasks in listed order
             elif self.pomdp.use_expected_gain_for(level):
                 task_idx = self.pomdp.select_action_by_expected_gain(
                     image, posterior, pending, level, step
@@ -1204,7 +1206,7 @@ class GeoPipeline:
 
             # DST: fuse all evidence so far into new posterior
             prev_top = max(posterior.values(), default=0.0)
-            posterior = self.dst.fuse(initial_posterior, evidence_scores_all)
+            posterior = self.dst.fuse(initial_posterior, evidence_scores_all, level)
             visual_delta = max(0.0, max(posterior.values(), default=0.0) - prev_top)
 
             # track key evidence (high-information clues)
@@ -1233,7 +1235,7 @@ class GeoPipeline:
         )
         w_scores = self.sl.score(response, hyps, level)
         prev_top = max(posterior.values(), default=0.0)
-        enhanced_posterior = self.dst.fuse(posterior, [w_scores])
+        enhanced_posterior = self.dst.fuse(posterior, [w_scores], level)
         web_delta = max(0.0, max(enhanced_posterior.values(), default=0.0) - prev_top)
 
         enhanced_evidence = list(key_evidence)
@@ -1584,7 +1586,11 @@ class GeoPipeline:
                 task_choices[i] = 0
 
             multi_task = [i for i in active if len(pending[i]) > 1]
-            if multi_task and self.pomdp.use_expected_gain_for(level):
+            if multi_task and self.pomdp.use_fixed_order_for(level):
+                # fixed climate-first order: consume tasks in listed order
+                for i in multi_task:
+                    task_choices[i] = 0
+            elif multi_task and self.pomdp.use_expected_gain_for(level):
                 eig_choices = self.pomdp.select_actions_by_expected_gain(
                     [images[i] for i in multi_task],
                     [posteriors[i] for i in multi_task],
@@ -1635,7 +1641,7 @@ class GeoPipeline:
                 w_scores = sl_results[k]
                 ev_scores_all[i].append(w_scores)
                 prev_top = max(posteriors[i].values(), default=0.0)
-                posteriors[i] = self.dst.fuse(priors[i], ev_scores_all[i])
+                posteriors[i] = self.dst.fuse(priors[i], ev_scores_all[i], level)
                 visual_deltas[i] = max(0.0, max(posteriors[i].values(), default=0.0) - prev_top)
 
                 max_w = max(w_scores.values(), default=1.0)

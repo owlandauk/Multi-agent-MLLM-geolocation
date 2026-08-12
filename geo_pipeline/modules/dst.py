@@ -20,9 +20,66 @@ clues), gated by the conflict mass K.
 """
 
 from __future__ import annotations
+import json
 import math
 import numpy as np
-from config import DST_CONFLICT_THR
+from config import (
+    DST_CONFLICT_THR,
+    DST_DISABLE_LEVELS,
+    COUNTRY_PRIOR_DEBIAS_GAMMA,
+    COUNTRY_PRIOR_FILE,
+)
+
+
+_COUNTRY_FREQ: dict[str, float] | None = None
+_COUNTRY_FREQ_LOADED = False
+
+
+def _load_country_freq() -> dict[str, float]:
+    """Lazily load the {country: frequency} debias divisor JSON (canonicalized)."""
+    global _COUNTRY_FREQ, _COUNTRY_FREQ_LOADED
+    if _COUNTRY_FREQ_LOADED:
+        return _COUNTRY_FREQ or {}
+    _COUNTRY_FREQ_LOADED = True
+    if not COUNTRY_PRIOR_FILE:
+        _COUNTRY_FREQ = {}
+        return _COUNTRY_FREQ
+    try:
+        from country_aliases import canonicalize_country
+        with open(COUNTRY_PRIOR_FILE) as fh:
+            raw = json.load(fh)
+        freq: dict[str, float] = {}
+        for name, f in raw.items():
+            canon = canonicalize_country(name) or name
+            freq[canon] = freq.get(canon, 0.0) + float(f)
+        _COUNTRY_FREQ = freq
+    except Exception:
+        _COUNTRY_FREQ = {}
+    return _COUNTRY_FREQ
+
+
+def _debias_country_prior(prior: dict[str, float]) -> dict[str, float]:
+    """P'(l) ∝ P(l) / freq(l)^gamma. Down-weights over-represented countries
+    (e.g. US). Countries absent from the freq table are left unchanged."""
+    gamma = COUNTRY_PRIOR_DEBIAS_GAMMA
+    if gamma <= 0:
+        return prior
+    freq = _load_country_freq()
+    if not freq:
+        return prior
+    try:
+        from country_aliases import canonicalize_country
+    except Exception:
+        return prior
+    adjusted = {}
+    for country, prob in prior.items():
+        canon = canonicalize_country(country) or country
+        f = freq.get(canon)
+        if f and f > 0:
+            adjusted[country] = prob / (f ** gamma)
+        else:
+            adjusted[country] = prob
+    return _renormalize(adjusted)
 
 
 def _renormalize(d: dict[str, float]) -> dict[str, float]:
@@ -160,11 +217,21 @@ class DSTModule:
 
     def fuse(self,
              prior: dict[str, float],
-             evidence_scores: list[dict[str, float]]) -> dict[str, float]:
+             evidence_scores: list[dict[str, float]],
+             level: str | None = None) -> dict[str, float]:
         if not prior:
             return {}
+        # kill US over-prediction: reweight the country prior by 1/freq^gamma
+        # before the multiplicative update (log-space subtraction, Zadeh-safe).
+        if level is not None and level.lower() == "country":
+            prior = _debias_country_prior(prior)
         # always run the Bayesian update; it is the GeoBayes-faithful path
         bayes_post = _bayesian_update(prior, evidence_scores)
+
+        # at coarse levels the Yager fallback flattens the likelihood magnitude
+        # that continent/country decisions rely on — skip it there.
+        if level is not None and level.lower() in DST_DISABLE_LEVELS:
+            return bayes_post
 
         # fall back to Yager only when conflict is extreme — protects against
         # the case where two strong contradictory clues would collapse posterior

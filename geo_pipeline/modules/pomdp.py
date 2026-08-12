@@ -13,7 +13,21 @@ policies for replacing that traversal:
 State       b_t(l) = current posterior over geographic hypotheses
 Action      a_t    = which verification task v_i to execute next
 Observation o_t    = support rating in {1,2,3,4,5}
-Reward      r_t    = H(b_t) - H(b_{t+1}) by default
+Observation likelihood:
+            P(o | b_t, a_t) = sum_l b_t(l) P(o | l, a_t)
+Belief update:
+            b_{t+1}^o(l) = eta b_t(l) P(o | l, a_t)
+Reward:
+            R(b_t, a_t, o, b_{t+1}) =
+              lambda_H [H(b_t) - H(b_{t+1})]
+            + lambda_M [max_l b_{t+1}(l) - max_l b_t(l)]
+            + lambda_G [margin(b_{t+1}) - margin(b_t)]
+            - cost(a_t)
+Action value:
+            Q(b_t, a_t) = sum_o P(o | b_t, a_t) R(b_t, a_t, o, b_{t+1}^o)
+
+The legacy reward modes ``entropy`` and ``map_gain`` remain available for
+ablations; ``combined`` activates the full equation above.
 """
 
 import math
@@ -21,7 +35,11 @@ import re
 from models.mllm_client import MLLMClient
 from config import (
     POMDP_ACTION_COST,
+    POMDP_COARSE_FIXED_ORDER,
     POMDP_EIG_LEVELS,
+    POMDP_ENTROPY_WEIGHT,
+    POMDP_MAP_GAIN_WEIGHT,
+    POMDP_MARGIN_GAIN_WEIGHT,
     POMDP_MAX_ACTIONS,
     POMDP_MAX_NEW_TOKENS,
     POMDP_MAX_STEPS,
@@ -59,6 +77,15 @@ def _entropy(posterior: dict[str, float]) -> float:
 
 def _top_mass(posterior: dict[str, float]) -> float:
     return max(posterior.values(), default=0.0)
+
+
+def _top_margin(posterior: dict[str, float]) -> float:
+    vals = sorted((float(v) for v in posterior.values()), reverse=True)
+    if not vals:
+        return 0.0
+    if len(vals) == 1:
+        return vals[0]
+    return vals[0] - vals[1]
 
 
 def _parse_rating(text: str) -> int:
@@ -104,11 +131,16 @@ class POMDPModule:
     def use_expected_gain_for(self, level: str) -> bool:
         return self.use_expected_gain and level in self.eig_levels
 
+    def use_fixed_order_for(self, level: str) -> bool:
+        """Coarse levels where POMDP degrades to fixed climate-first order:
+        tasks are consumed in listed order, no adaptive/EIG selection."""
+        return level.lower() in POMDP_COARSE_FIXED_ORDER
+
     @property
     def policy_label(self) -> str:
         if not self.use_expected_gain:
             return self.policy
-        return f"{self.policy}:{','.join(self.eig_levels)}"
+        return f"{self.policy}:{','.join(self.eig_levels)}:reward={POMDP_REWARD_MODE}"
 
     def _belief_summary(self, posterior: dict[str, float]) -> str:
         items = sorted(posterior.items(), key=lambda x: -x[1])
@@ -200,36 +232,89 @@ class POMDPModule:
             }
         ]
 
+    def _belief_after_observation(
+        self,
+        prior: dict[str, float],
+        observation_model: dict[str, dict[int, float]],
+        rating: int,
+    ) -> tuple[float, dict[str, float]]:
+        """Return P(o | b, a) and the posterior induced by observation o."""
+        likelihoods = {}
+        obs_prob = 0.0
+        for hyp, prob in prior.items():
+            dist = observation_model.get(hyp, _NEUTRAL_OBS)
+            likelihood = max(dist.get(rating, 0.0), 1e-6)
+            likelihoods[hyp] = likelihood
+            obs_prob += prob * likelihood
+
+        if obs_prob <= 0:
+            return 0.0, prior
+
+        next_belief = _renormalize(
+            {hyp: prob * likelihoods[hyp] for hyp, prob in prior.items()}
+        )
+        return obs_prob, next_belief
+
+    def _reward_components(
+        self,
+        prior: dict[str, float],
+        next_belief: dict[str, float],
+    ) -> dict[str, float]:
+        """Compute the component deltas used by the POMDP reward equation."""
+        return {
+            "entropy_gain": _entropy(prior) - _entropy(next_belief),
+            "map_gain": _top_mass(next_belief) - _top_mass(prior),
+            "margin_gain": _top_margin(next_belief) - _top_margin(prior),
+        }
+
+    def _observation_reward(
+        self,
+        prior: dict[str, float],
+        next_belief: dict[str, float],
+    ) -> float:
+        """Reward for one observation branch before subtracting action cost.
+
+        Modes:
+        - entropy: max(0, H(b)-H(b'))
+        - map_gain: max(0, max b' - max b)
+        - margin_gain: max(0, margin(b') - margin(b))
+        - combined: weighted reward equation used for the thesis POMDP.
+        """
+        components = self._reward_components(prior, next_belief)
+        mode = POMDP_REWARD_MODE
+        if mode == "map_gain":
+            return max(0.0, components["map_gain"])
+        if mode == "margin_gain":
+            return max(0.0, components["margin_gain"])
+        if mode in {"combined", "full", "thesis"}:
+            return (
+                POMDP_ENTROPY_WEIGHT * components["entropy_gain"]
+                + POMDP_MAP_GAIN_WEIGHT * components["map_gain"]
+                + POMDP_MARGIN_GAIN_WEIGHT * components["margin_gain"]
+            )
+        return max(0.0, components["entropy_gain"])
+
     def _expected_information_gain(
         self,
         posterior: dict[str, float],
         observation_model: dict[str, dict[int, float]],
     ) -> float:
+        """One-step POMDP action value Q(b, a).
+
+        The method name is kept for compatibility with older experiments, but
+        the score is now the configured expected reward, not only entropy gain.
+        """
         prior = _renormalize(posterior)
-        prior_entropy = _entropy(prior)
-        prior_top = _top_mass(prior)
         expected_reward = 0.0
 
         for rating in _RATINGS:
-            likelihoods = {}
-            obs_prob = 0.0
-            for hyp, prob in prior.items():
-                dist = observation_model.get(hyp, _NEUTRAL_OBS)
-                likelihood = max(dist.get(rating, 0.0), 1e-6)
-                likelihoods[hyp] = likelihood
-                obs_prob += prob * likelihood
-
+            obs_prob, next_belief = self._belief_after_observation(
+                prior, observation_model, rating
+            )
             if obs_prob <= 0:
                 continue
 
-            next_belief = _renormalize(
-                {hyp: prob * likelihoods[hyp] for hyp, prob in prior.items()}
-            )
-            if POMDP_REWARD_MODE == "map_gain":
-                reward = max(0.0, _top_mass(next_belief) - prior_top)
-            else:
-                reward = max(0.0, prior_entropy - _entropy(next_belief))
-            expected_reward += obs_prob * reward
+            expected_reward += obs_prob * self._observation_reward(prior, next_belief)
 
         return expected_reward - POMDP_ACTION_COST
 
