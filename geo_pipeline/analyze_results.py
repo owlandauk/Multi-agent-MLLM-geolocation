@@ -23,6 +23,9 @@ _THRESHOLD_LABELS = {
     2500: "Continent <2500km",
 }
 
+# Minimum GT-country sample size to report a per-country accuracy slice (noise floor).
+_MIN_GT_COUNTRY_N = 20
+
 
 def _posterior_top_mass(record: dict, field: str) -> float | None:
     posterior = record.get(field) or {}
@@ -131,8 +134,182 @@ def _continent_mass_bucket(record: dict) -> str:
     return ">=0.65"
 
 
+def _finite_dist(value) -> float | None:
+    try:
+        d = float(value)
+    except (TypeError, ValueError):
+        return None
+    return d if d == d and d != float("inf") else None  # reject NaN/inf
+
+
+def _percentiles(values: list[float]) -> dict:
+    """median / P90 / P99 / max over a list of distances."""
+    if not values:
+        return {"n": 0, "median": None, "p90": None, "p99": None, "max": None}
+    ordered = sorted(values)
+    n = len(ordered)
+
+    def pct(p: float) -> float:
+        # nearest-rank; clamp index into range
+        idx = min(n - 1, max(0, int(round(p * (n - 1)))))
+        return round(ordered[idx], 1)
+
+    return {
+        "n": n,
+        "median": round(median(ordered), 1),
+        "p90": pct(0.90),
+        "p99": pct(0.99),
+        "max": round(ordered[-1], 1),
+    }
+
+
+_RG_TRIED = False
+_RG_RESULTS: dict[tuple, str] = {}
+_ISO2_NAME_CACHE: dict[str, str | None] = {}
+
+
+def _iso2_to_country(code: str) -> str | None:
+    """ISO-2 -> country name via pycountry (lazy, optional)."""
+    code = (code or "").upper()
+    if not code:
+        return None
+    if code in _ISO2_NAME_CACHE:
+        return _ISO2_NAME_CACHE[code]
+    try:
+        import pycountry
+    except ImportError:
+        _ISO2_NAME_CACHE[code] = None
+        return None
+    match = pycountry.countries.get(alpha_2=code)
+    name = match.name if match else None
+    _ISO2_NAME_CACHE[code] = name
+    return name
+
+
+def _prime_gt_countries(records: list[dict]) -> None:
+    """Batch reverse-geocode every GT coord once (offline, server-only dep).
+
+    Populates _RG_RESULTS keyed by rounded (lat, lon). No-op (leaves the cache
+    empty) if reverse_geocoder is unavailable, so all GT-country slices degrade
+    to empty rather than crashing on a machine without the gazetteer.
+    """
+    global _RG_TRIED
+    if _RG_TRIED:
+        return
+    _RG_TRIED = True
+    coords = []
+    for r in records:
+        lat, lon = r.get("gt_lat"), r.get("gt_lon")
+        if lat is None or lon is None:
+            continue
+        coords.append((round(float(lat), 4), round(float(lon), 4)))
+    if not coords:
+        return
+    try:
+        import reverse_geocoder as rg
+    except ImportError:
+        return
+    hits = rg.search(coords)  # offline; one batched call
+    for key, hit in zip(coords, hits):
+        _RG_RESULTS[key] = str(hit.get("cc", "")) if hit else ""
+
+
+def _gt_country(record: dict) -> str | None:
+    """Canonical GT country from stored coords; None if unresolved/unavailable."""
+    lat, lon = record.get("gt_lat"), record.get("gt_lon")
+    if lat is None or lon is None:
+        return None
+    cc = _RG_RESULTS.get((round(float(lat), 4), round(float(lon), 4)))
+    if not cc:
+        return None
+    name = _iso2_to_country(cc) or cc
+    return canonicalize_country(name) or name
+
+
+def _retrieval_attribution(records: list[dict]) -> dict:
+    """Per-image causal effect of the pipeline's evidence/fallback machinery,
+    measured as pre_fallback_dist_km (before) vs dist_km (after).
+
+    Classifies each covered record and computes the net threshold effect:
+    (# that crossed under a threshold) - (# that fell back over it).
+    """
+    classes = {"helped": 0, "hurt": 0, "changed_neutral": 0, "unchanged": 0}
+    net = {thr: 0 for thr in EVAL_THRESHOLDS}
+    improvements: list[float] = []
+    regressions: list[float] = []
+    covered = 0
+    for r in records:
+        before = _finite_dist(r.get("pre_fallback_dist_km"))
+        after = _finite_dist(r.get("dist_km"))
+        if before is None or after is None:
+            continue
+        covered += 1
+        gained = lost = False
+        for thr in EVAL_THRESHOLDS:
+            b_ok, a_ok = before <= thr, after <= thr
+            if a_ok and not b_ok:
+                net[thr] += 1
+                gained = True
+            elif b_ok and not a_ok:
+                net[thr] -= 1
+                lost = True
+        if after < before:
+            improvements.append(before - after)
+        elif after > before:
+            regressions.append(after - before)
+        if gained and not lost:
+            classes["helped"] += 1
+        elif lost and not gained:
+            classes["hurt"] += 1
+        elif gained and lost:
+            classes["changed_neutral"] += 1  # crossed some, fell back others
+        elif after != before:
+            classes["changed_neutral"] += 1  # moved but no threshold flip
+        else:
+            classes["unchanged"] += 1
+    total = len(records)
+    return {
+        "coverage": covered,
+        "coverage_rate": round(100.0 * covered / total, 2) if total else 0.0,
+        "classes": classes,
+        "net_threshold_effect": {str(thr): net[thr] for thr in EVAL_THRESHOLDS},
+        "improvement_km": _percentiles(improvements),
+        "regression_km": _percentiles(regressions),
+    }
+
+
+def _has_image_evidence(record: dict) -> bool:
+    ev = record.get("country_image_search_evidence")
+    if ev is None:
+        return False
+    if isinstance(ev, str):
+        return bool(ev.strip())
+    return bool(ev)
+
+
+def _image_search_evidence_quality(records: list[dict]) -> dict:
+    """Evidence-quality view: among enhanced records, are they more accurate,
+    and did Vision actually return evidence text (hit rate)?"""
+    enhanced = [r for r in records if r.get("country_image_search_enhanced")]
+    with_ev = [r for r in enhanced if _has_image_evidence(r)]
+    enhanced_dists = [d for r in enhanced if (d := _finite_dist(r.get("dist_km"))) is not None]
+    return {
+        "enhanced_n": len(enhanced),
+        "enhanced_with_evidence_n": len(with_ev),
+        "vision_hit_rate": (
+            round(100.0 * len(with_ev) / len(enhanced), 2) if enhanced else None
+        ),
+        "enhanced_accuracy": _accuracy_by_threshold(enhanced),
+        "enhanced_dist_km": _percentiles(enhanced_dists),
+        "by_has_evidence": _bucket_accuracy(
+            records, lambda r: "evidence" if _has_image_evidence(r) else "no_evidence"
+        ),
+    }
+
+
 def analyze(records: list[dict]) -> dict:
     total = len(records)
+    _prime_gt_countries(records)
     correct = {thr: 0 for thr in EVAL_THRESHOLDS}
     for record in records:
         dist = float(record.get("dist_km", float("inf")))
@@ -397,6 +574,30 @@ def analyze(records: list[dict]) -> dict:
                 for r in na_fp_examples
             ],
         },
+        "retrieval_attribution": _retrieval_attribution(records),
+        "image_search_evidence_quality": _image_search_evidence_quality(records),
+        "accuracy_by_gt_country": {
+            country: stats
+            for country, stats in sorted(
+                _bucket_accuracy(
+                    [r for r in records if _gt_country(r)], _gt_country
+                ).items(),
+                key=lambda kv: kv[1]["n"],
+                reverse=True,
+            )
+            if stats["n"] >= _MIN_GT_COUNTRY_N
+        },
+        "distance_distribution": {
+            "dist_km": _percentiles(
+                [d for r in records if (d := _finite_dist(r.get("dist_km"))) is not None]
+            ),
+            "pre_fallback_dist_km": _percentiles(
+                [
+                    d for r in records
+                    if (d := _finite_dist(r.get("pre_fallback_dist_km"))) is not None
+                ]
+            ),
+        },
     }
 
 
@@ -578,6 +779,69 @@ def _print_report(report: dict) -> None:
                     f"    {key}: n={stats['n']} "
                     f"country={acc.get('750', 0.0):.2f}% continent={acc.get('2500', 0.0):.2f}%"
                 )
+
+    attr = report.get("retrieval_attribution", {})
+    if attr and attr.get("coverage"):
+        c = attr["classes"]
+        print(
+            f"\nRetrieval attribution (pre_fallback vs final, coverage "
+            f"{attr['coverage']}={attr['coverage_rate']:.1f}%)"
+        )
+        print(
+            f"  classes: helped={c['helped']} hurt={c['hurt']} "
+            f"changed_neutral={c['changed_neutral']} unchanged={c['unchanged']}"
+        )
+        net = attr["net_threshold_effect"]
+        print("  net threshold effect (gained - lost): " + ", ".join(
+            f"{_THRESHOLD_LABELS[thr]}={net.get(str(thr), 0):+d}" for thr in EVAL_THRESHOLDS
+        ))
+        imp, reg = attr["improvement_km"], attr["regression_km"]
+        print(
+            f"  improved {imp['n']}: median={imp['median']} p90={imp['p90']} km | "
+            f"regressed {reg['n']}: median={reg['median']} p90={reg['p90']} km"
+        )
+
+    evq = report.get("image_search_evidence_quality", {})
+    if evq and evq.get("enhanced_n"):
+        hit = evq.get("vision_hit_rate")
+        acc = evq["enhanced_accuracy"]
+        d = evq["enhanced_dist_km"]
+        print(
+            f"\nImage-search evidence quality: enhanced={evq['enhanced_n']} "
+            f"with_evidence={evq['enhanced_with_evidence_n']} "
+            f"(vision_hit_rate={hit}%)"
+        )
+        print(
+            f"  enhanced acc: country={acc.get('750', 0.0):.2f}% "
+            f"continent={acc.get('2500', 0.0):.2f}% | "
+            f"dist median={d['median']} p90={d['p90']} km"
+        )
+        for key, stats in evq.get("by_has_evidence", {}).items():
+            a = stats["accuracy"]
+            print(
+                f"    {key}: n={stats['n']} country={a.get('750', 0.0):.2f}% "
+                f"continent={a.get('2500', 0.0):.2f}%"
+            )
+
+    dist = report.get("distance_distribution", {})
+    if dist:
+        for label, key in (("final", "dist_km"), ("pre_fallback", "pre_fallback_dist_km")):
+            p = dist.get(key, {})
+            if p and p.get("n"):
+                print(
+                    f"\nDistance ({label}) n={p['n']}: median={p['median']} "
+                    f"p90={p['p90']} p99={p['p99']} max={p['max']} km"
+                )
+
+    by_country = report.get("accuracy_by_gt_country", {})
+    if by_country:
+        print(f"\nAccuracy by GT country (n>={_MIN_GT_COUNTRY_N})")
+        for country, stats in by_country.items():
+            a = stats["accuracy"]
+            print(
+                f"  {country}: n={stats['n']} street={a.get('1', 0.0):.1f}% "
+                f"country={a.get('750', 0.0):.1f}% continent={a.get('2500', 0.0):.1f}%"
+            )
 
 
 def main() -> None:
