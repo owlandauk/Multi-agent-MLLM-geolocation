@@ -38,6 +38,7 @@ from config import (
     STRONG_POSTERIOR_THR, STABLE_MARGIN_THR, STABLE_ENTROPY_THR,
     GUARDED_DESCENT_THR, COUNTRY_REPLACE_TOP_THR,
     COUNTRY_REPLACE_MARGIN_THR, COUNTRY_REPLACE_ATTEMPTS, COUNTRY_CUE_ENSEMBLE,
+    CONTINENT_CUE_ENSEMBLE,
     BALANCED_COUNTRY_GUARD,
     COUNTRY_GEOREASONER_SEED, GEOREASONER_COUNTRY_BOOST,
     GEOREASONER_REQUIRE_DIRECT_CLUE,
@@ -84,6 +85,24 @@ _COUNTRY_CUE_PROMPTS = [
         "architecture_urban_form",
         "Focus on architecture, urban layout, road furniture, utilities, building "
         "materials, and regional infrastructure style. Return likely countries only.",
+    ),
+]
+
+_CONTINENT_CUE_PROMPTS = [
+    (
+        "hemisphere_climate",
+        "Focus on hemisphere (northern vs southern), climate zone (tropical, temperate, "
+        "polar), sun angle and shadow direction, and season. Return likely continents only.",
+    ),
+    (
+        "vegetation_biome",
+        "Focus on vegetation, biome, terrain, and coastal, desert, or forest cues that "
+        "distinguish one continent from another. Return likely continents only.",
+    ),
+    (
+        "sky_ecology",
+        "Focus on the visible sky, wildlife, agriculture, and large-scale landscape "
+        "ecology. Return likely continents only.",
     ),
 ]
 
@@ -340,6 +359,23 @@ def _merge_country_scores(parsed_responses: list[dict | None], top_k: int = 8) -
     merged = {
         country: min(score + 0.05 * (source_counts.get(country, 1) - 1), 0.95)
         for country, score in max_scores.items()
+    }
+    return dict(sorted(merged.items(), key=lambda kv: -kv[1])[:top_k])
+
+
+def _merge_continent_scores(parsed_responses: list[dict | None], top_k: int = 6) -> dict[str, float]:
+    """Merge continent hypotheses from multiple focused continent cue prompts."""
+    max_scores: dict[str, float] = {}
+    source_counts: dict[str, int] = {}
+    for parsed in parsed_responses:
+        if not parsed or "hypotheses" not in parsed:
+            continue
+        for continent, score in _collect_scores(parsed["hypotheses"], "continent").items():
+            max_scores[continent] = max(max_scores.get(continent, 0.0), score)
+            source_counts[continent] = source_counts.get(continent, 0) + 1
+    merged = {
+        continent: min(score + 0.05 * (source_counts.get(continent, 1) - 1), 0.95)
+        for continent, score in max_scores.items()
     }
     return dict(sorted(merged.items(), key=lambda kv: -kv[1])[:top_k])
 
@@ -873,6 +909,25 @@ def _country_cue_prompt(image: Image.Image, cue_instruction: str) -> list:
     ]
 
 
+def _continent_cue_prompt(image: Image.Image, cue_instruction: str) -> list:
+    return [
+        {
+            "role": "user",
+            "content": [
+                {"type": "image", "image": image},
+                {"type": "text", "text": (
+                    "You are a geolocation expert. Identify the most likely continents. "
+                    f"{cue_instruction}\n"
+                    "Return continent names only: Africa, Asia, Europe, North America, "
+                    "Oceania, or South America. Do not return countries or regions.\n\n"
+                    "Analyze this image and respond with JSON only, no markdown fences:\n"
+                    '{"hypotheses": [{"location": "<continent>", "confidence": <0-1>}, ...]}'
+                )},
+            ],
+        }
+    ]
+
+
 def _georeasoner_country_prompt(image: Image.Image) -> list:
     return [
         {
@@ -1103,6 +1158,22 @@ class GeoPipeline:
                     return prior, [], raw_bundle
             # fallback: single hypothesis with uniform prior
             return {"Unknown": 1.0}, [], response
+
+        if level == "continent" and CONTINENT_CUE_ENSEMBLE:
+            cue_responses = [
+                self.mllm.generate(_continent_cue_prompt(image, cue_text))
+                for _, cue_text in _CONTINENT_CUE_PROMPTS
+            ]
+            cue_parsed = [_parse_hypothesis_payload(resp) for resp in cue_responses]
+            parsed_sources = [parsed] if parsed and "hypotheses" in parsed else []
+            raw_scores = _merge_continent_scores([*parsed_sources, *cue_parsed])
+            prior = _softmax_prior(raw_scores) if raw_scores else {"Unknown": 1.0}
+            plan = parsed.get("verification_plan", []) if parsed else []
+            raw_bundle = json.dumps(
+                {"general": response, "cue_responses": cue_responses},
+                ensure_ascii=True,
+            )
+            return prior, plan, raw_bundle
 
         if level == "country" and COUNTRY_CUE_ENSEMBLE:
             cue_responses = [
@@ -1482,6 +1553,11 @@ class GeoPipeline:
             for _, cue_text in _COUNTRY_CUE_PROMPTS:
                 cue_messages = [_country_cue_prompt(images[i], cue_text) for i in range(n)]
                 cue_responses_by_cue.append(self.mllm.batch_generate(cue_messages))
+        continent_cue_responses_by_cue = []
+        if level == "continent" and CONTINENT_CUE_ENSEMBLE:
+            for _, cue_text in _CONTINENT_CUE_PROMPTS:
+                cue_messages = [_continent_cue_prompt(images[i], cue_text) for i in range(n)]
+                continent_cue_responses_by_cue.append(self.mllm.batch_generate(cue_messages))
         georeasoner_responses = []
         if level == "country" and COUNTRY_GEOREASONER_SEED:
             seed_messages = [_georeasoner_country_prompt(images[i]) for i in range(n)]
@@ -1493,7 +1569,19 @@ class GeoPipeline:
             parsed = _parse_hypothesis_payload(resp)
             seed_resp = georeasoner_responses[idx] if georeasoner_responses else ""
             seeded = False
-            if level == "country" and COUNTRY_CUE_ENSEMBLE:
+            if level == "continent" and CONTINENT_CUE_ENSEMBLE:
+                cue_resps = [cue_batch[idx] for cue_batch in continent_cue_responses_by_cue]
+                cue_parsed = [_parse_hypothesis_payload(cue_resp) for cue_resp in cue_resps]
+                parsed_sources = [parsed] if parsed and "hypotheses" in parsed else []
+                raw_scores = _merge_continent_scores([*parsed_sources, *cue_parsed])
+                prior = _softmax_prior(raw_scores) if raw_scores else {"Unknown": 1.0}
+                priors.append(prior)
+                plans.append(parsed.get("verification_plan", []) if parsed else [])
+                hyp_responses[idx] = json.dumps(
+                    {"general": resp, "cue_responses": cue_resps},
+                    ensure_ascii=True,
+                )
+            elif level == "country" and COUNTRY_CUE_ENSEMBLE:
                 cue_resps = [cue_batch[idx] for cue_batch in cue_responses_by_cue]
                 cue_parsed = [_parse_hypothesis_payload(cue_resp) for cue_resp in cue_resps]
                 parsed_sources = [parsed] if parsed and "hypotheses" in parsed else []
