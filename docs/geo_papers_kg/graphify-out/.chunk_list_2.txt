@@ -1,0 +1,16 @@
+/Users/I776447/Desktop/geo_thesis/cvhci/docs/geo_papers_kg/geobayes.md
+/Users/I776447/Desktop/geo_thesis/cvhci/docs/geo_papers_kg/geobench-vlm.md
+/Users/I776447/Desktop/geo_thesis/cvhci/docs/geo_papers_kg/geoclip-rerank-line.md
+/Users/I776447/Desktop/geo_thesis/cvhci/docs/geo_papers_kg/geoclip.md
+/Users/I776447/Desktop/geo_thesis/cvhci/docs/geo_papers_kg/geolocsft.md
+/Users/I776447/Desktop/geo_thesis/cvhci/docs/geo_papers_kg/georanker.md
+/Users/I776447/Desktop/geo_thesis/cvhci/docs/geo_papers_kg/georeasoner.md
+/Users/I776447/Desktop/geo_thesis/cvhci/docs/geo_papers_kg/geosearch.md
+/Users/I776447/Desktop/geo_thesis/cvhci/docs/geo_papers_kg/gre-suite.md
+/Users/I776447/Desktop/geo_thesis/cvhci/docs/geo_papers_kg/gws15k.md
+/Users/I776447/Desktop/geo_thesis/cvhci/docs/geo_papers_kg/im2gps3k.md
+/Users/I776447/Desktop/geo_thesis/cvhci/docs/geo_papers_kg/img2loc.md
+/Users/I776447/Desktop/geo_thesis/cvhci/docs/geo_papers_kg/integrated-control-pomdp.md
+/Users/I776447/Desktop/geo_thesis/cvhci/docs/geo_papers_kg/pigeon.md
+/Users/I776447/Desktop/geo_thesis/cvhci/docs/geo_papers_kg/pinpoint.md
+/Users/I776447/Desktop/geo_thesis/cvhci/docs/geo_papers_kg/pomdp-module.md

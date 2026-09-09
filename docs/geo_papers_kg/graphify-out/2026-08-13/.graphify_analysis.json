@@ -1,0 +1,223 @@
+{
+  "communities": {
+    "0": [
+      "country_cue_prompting",
+      "eval_geoloc_mllm",
+      "geo_privacy",
+      "geo_rl",
+      "geoagent",
+      "geobench_vlm",
+      "geocot",
+      "geolocsft",
+      "georeasoner",
+      "gre_suite",
+      "imageo_bench",
+      "llmgeo",
+      "reinforcing_image_geoloc",
+      "systematic_benchmark_geoloc",
+      "training_free_paradigm",
+      "where_on_earth_bench"
+    ],
+    "1": [
+      "consensus_entropy",
+      "consistency_uncertainty",
+      "kadavath_know",
+      "kernel_language_entropy",
+      "kuhn_semantic_uncertainty",
+      "semantic_entropy",
+      "semantic_entropy_probes",
+      "sl_module",
+      "vision_conditioned_semantic_entropy",
+      "vlm_safety_audit",
+      "xiong_verbalized_confidence"
+    ],
+    "2": [
+      "dempster_1967",
+      "dempster_behavior",
+      "dempster_shafer",
+      "dst_bayes_equivalence",
+      "dst_module",
+      "dubois_prade_1992",
+      "shafer_1976",
+      "smets_tbm",
+      "yager_1987"
+    ],
+    "3": [
+      "active_perception_game",
+      "active_perception_pomdp_survey",
+      "belief_space_planning",
+      "integrated_control_pomdp",
+      "kaelbling_pomdp",
+      "perception_aware_pbvi",
+      "platt_belief_space",
+      "pomdp_module"
+    ],
+    "4": [
+      "clip",
+      "georanker",
+      "pigeon",
+      "pinpoint",
+      "qwen25_vl",
+      "retrieval_geolocation_family",
+      "streetclip"
+    ],
+    "5": [
+      "ai_sees_location",
+      "coarse_subtraction_hypothesis",
+      "pure_mllm_country_bias",
+      "regional_bias_vlm",
+      "vlms_geoguessr_masters",
+      "where_vlms_fail"
+    ],
+    "6": [
+      "g3",
+      "geobayes",
+      "geoclip_rerank_line",
+      "gws15k",
+      "im2gps3k",
+      "yfcc4k"
+    ],
+    "7": [
+      "geoclip",
+      "geosearch",
+      "img2loc",
+      "thesis_pure_mllm_pipeline"
+    ]
+  },
+  "cohesion": {
+    "0": 0.36666666666666664,
+    "1": 0.6545454545454545,
+    "2": 0.75,
+    "3": 0.6785714285714286,
+    "4": 0.7619047619047619,
+    "5": 0.9333333333333333,
+    "6": 0.6666666666666666,
+    "7": 1.0
+  },
+  "gods": [
+    {
+      "id": "geobayes",
+      "label": "GeoBayes: Probabilistic Image Geo-Localization Inference via Sequential Bayesian Updating",
+      "degree": 21
+    },
+    {
+      "id": "thesis_pure_mllm_pipeline",
+      "label": "Thesis Pure-MLLM Pipeline",
+      "degree": 18
+    },
+    {
+      "id": "training_free_paradigm",
+      "label": "Training-Free Geolocation Paradigm",
+      "degree": 17
+    },
+    {
+      "id": "coarse_subtraction_hypothesis",
+      "label": "Coarse-Subtraction Hypothesis",
+      "degree": 16
+    },
+    {
+      "id": "sl_module",
+      "label": "SL Module (Sampling-Likelihood)",
+      "degree": 16
+    },
+    {
+      "id": "pomdp_module",
+      "label": "POMDP Module (Action Selection)",
+      "degree": 16
+    },
+    {
+      "id": "qwen25_vl",
+      "label": "Qwen2.5-VL Technical Report",
+      "degree": 14
+    },
+    {
+      "id": "geoclip",
+      "label": "GeoCLIP: Clip-Inspired Alignment between Locations and Images for Effective Worldwide Geo-localization",
+      "degree": 14
+    },
+    {
+      "id": "retrieval_geolocation_family",
+      "label": "Retrieval-Geolocation Family",
+      "degree": 13
+    },
+    {
+      "id": "dst_module",
+      "label": "DST Module (Dempster-Shafer Fusion)",
+      "degree": 13
+    }
+  ],
+  "surprises": [
+    {
+      "source": "VLMs as GeoGuessr Masters: Fairness / Geographic Bias in VLM Geolocation",
+      "target": "Where Do VLMs Fail? Regional Failure Analysis for Image Geolocation",
+      "source_files": [
+        "vlms-geoguessr-masters.md",
+        "where-vlms-fail.md"
+      ],
+      "confidence": "INFERRED",
+      "relation": "semantically_similar_to",
+      "why": "inferred connection - not explicitly stated in source; connects across different repos/directories; semantically similar concepts with no structural link"
+    },
+    {
+      "source": "Vision-Conditioned Semantic Entropy (UniVRSE / VASE)",
+      "target": "Behavioral Safety Audit of Vision-Language Models: Confidence on Wrong Answers",
+      "source_files": [
+        "vision-conditioned-semantic-entropy.md",
+        "vlm-safety-audit.md"
+      ],
+      "confidence": "INFERRED",
+      "relation": "semantically_similar_to",
+      "why": "inferred connection - not explicitly stated in source; connects across different repos/directories; semantically similar concepts with no structural link"
+    },
+    {
+      "source": "Kuhn 2023 (Semantic Uncertainty)",
+      "target": "Kadavath 2022 (Language Models Know What They Know)",
+      "source_files": [
+        "kuhn-semantic-uncertainty.md",
+        "kadavath-know.md"
+      ],
+      "confidence": "INFERRED",
+      "relation": "semantically_similar_to",
+      "why": "inferred connection - not explicitly stated in source; connects across different repos/directories; semantically similar concepts with no structural link"
+    },
+    {
+      "source": "Kuhn 2023 (Semantic Uncertainty)",
+      "target": "Kernel Language Entropy (Nikitin 2024)",
+      "source_files": [
+        "kuhn-semantic-uncertainty.md",
+        "kernel-language-entropy.md"
+      ],
+      "confidence": "INFERRED",
+      "relation": "semantically_similar_to",
+      "why": "inferred connection - not explicitly stated in source; connects across different repos/directories; semantically similar concepts with no structural link"
+    },
+    {
+      "source": "Yager 1987 (New Combination Rules)",
+      "target": "Smets Transferable Belief Model (TBM)",
+      "source_files": [
+        "yager-1987.md",
+        "smets-tbm.md"
+      ],
+      "confidence": "INFERRED",
+      "relation": "semantically_similar_to",
+      "why": "inferred connection - not explicitly stated in source; connects across different repos/directories; semantically similar concepts with no structural link"
+    }
+  ],
+  "questions": [
+    {
+      "type": "bridge_node",
+      "question": "Why does `GeoBayes: Probabilistic Image Geo-Localization Inference via Sequential Bayesian Updating` connect `GeoBayes: Probabilistic Image Geo-Localization Inference via Sequential Bayesian Updating` to `Training-Free Geolocation Paradigm`, `SL Module (Sampling-Likelihood)`, `DST Module (Dempster-Shafer Fusion)`, `POMDP Module (Action Selection)`, `Qwen2.5-VL Technical Report`, `Coarse-Subtraction Hypothesis`, `Thesis Pure-MLLM Pipeline`?",
+      "why": "High betweenness centrality (0.199) - this node is a cross-community bridge."
+    },
+    {
+      "type": "bridge_node",
+      "question": "Why does `POMDP Module (Action Selection)` connect `POMDP Module (Action Selection)` to `Training-Free Geolocation Paradigm`, `SL Module (Sampling-Likelihood)`, `DST Module (Dempster-Shafer Fusion)`, `Coarse-Subtraction Hypothesis`, `GeoBayes: Probabilistic Image Geo-Localization Inference via Sequential Bayesian Updating`, `Thesis Pure-MLLM Pipeline`?",
+      "why": "High betweenness centrality (0.167) - this node is a cross-community bridge."
+    },
+    {
+      "type": "bridge_node",
+      "question": "Why does `Coarse-Subtraction Hypothesis` connect `Coarse-Subtraction Hypothesis` to `Training-Free Geolocation Paradigm`, `SL Module (Sampling-Likelihood)`, `DST Module (Dempster-Shafer Fusion)`, `POMDP Module (Action Selection)`, `Qwen2.5-VL Technical Report`, `GeoBayes: Probabilistic Image Geo-Localization Inference via Sequential Bayesian Updating`, `Thesis Pure-MLLM Pipeline`?",
+      "why": "High betweenness centrality (0.161) - this node is a cross-community bridge."
+    }
+  ]
+}
