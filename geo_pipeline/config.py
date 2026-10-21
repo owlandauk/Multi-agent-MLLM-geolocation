@@ -159,6 +159,23 @@ SL_DISABLE_LEVELS = tuple(
     if level.strip()
 )
 
+# ── Fine-level sample-N agreement gate ─────────────────────────────────────────
+# Self-consistency confidence for the city/street name proposal. When
+# FINE_SAMPLE_N > 1, the hypothesize step at city/street is sampled N times and
+# the fraction of samples whose top name matches the modal name is recorded as
+# "{level}_name_agreement". evaluate.py skips a fine name whose agreement is
+# below FINE_AGREEMENT_THR, letting geocoding fall through to the country name
+# (NOT the country centroid). N=1 (default) = signal off → behaviour identical
+# to the current pipeline. Only city/street are sampled; country/continent are
+# left single-sample.
+FINE_SAMPLE_N = int(os.environ.get("FINE_SAMPLE_N", "1"))
+FINE_AGREEMENT_THR = float(os.environ.get("FINE_AGREEMENT_THR", "0.6"))
+FINE_SAMPLE_LEVELS = tuple(
+    level.strip().lower()
+    for level in os.environ.get("FINE_SAMPLE_LEVELS", "city,street").split(",")
+    if level.strip()
+)
+
 # ── DST (Dempster-Shafer fusion) ───────────────────────────────────────────────
 DST_CONFLICT_THR = 0.5   # K > this → treat as high-conflict, apply cautious rule
 # Levels where the Yager DST fallback is disabled (always use the faithful

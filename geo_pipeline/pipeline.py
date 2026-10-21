@@ -59,6 +59,7 @@ from config import (
     WEB_SEARCH_VERIFY_MAX_NEW_TOKENS,
     IMAGE_SEARCH_STRICT_TEXT_QUERY,
     FACTCHECK_MAX_NEW_TOKENS,
+    FINE_SAMPLE_N, FINE_SAMPLE_LEVELS,
 )
 
 LEVELS = ["continent", "country", "city", "street"] if ENABLE_CONTINENT_LEVEL else [
@@ -344,6 +345,51 @@ def _collect_scores(hypotheses: list, level: str) -> dict[str, float]:
             loc = canon
         scores[loc] = max(scores.get(loc, 0.0), conf)
     return scores
+
+
+def _norm_name_for_agreement(text: str) -> str:
+    import re as _re
+    return _re.sub(r"[^a-z0-9]+", " ", str(text).lower()).strip()
+
+
+def _top_name_from_response(resp: str, level: str) -> str | None:
+    """Parse one hypothesize response and return its single top location name.
+
+    Mirrors how predict() picks `best`: parse payload -> collect per-level
+    scores -> softmax -> argmax. Returns None if the response has no usable
+    hypothesis, so a parse failure counts as a distinct ('no-name') vote rather
+    than silently matching some other sample.
+    """
+    parsed = _parse_hypothesis_payload(resp)
+    if not parsed or "hypotheses" not in parsed:
+        return None
+    raw_scores = _collect_scores(parsed["hypotheses"], level)
+    if not raw_scores:
+        return None
+    prior = _softmax_prior(raw_scores)
+    top = max(prior, key=prior.get)
+    return _norm_name_for_agreement(top) if top else None
+
+
+def _name_agreement(responses: list[str], level: str) -> tuple[float, int]:
+    """Self-consistency of the top name across N sampled hypothesize responses.
+
+    Returns (agreement_fraction, n_valid) where agreement_fraction is the share
+    of the N samples whose top name equals the modal (most frequent) top name.
+    A sample that parses to no name is still counted in the denominator, so
+    unstable/unparseable proposals are correctly penalised. With N<=1 returns
+    (1.0, n) — signal off.
+    """
+    n = len(responses)
+    if n <= 1:
+        return 1.0, n
+    from collections import Counter
+    names = [_top_name_from_response(r, level) for r in responses]
+    counts = Counter(name for name in names if name is not None)
+    if not counts:
+        return 0.0, n
+    modal_count = counts.most_common(1)[0][1]
+    return modal_count / n, n
 
 
 def _merge_country_scores(parsed_responses: list[dict | None], top_k: int = 8) -> dict[str, float]:
@@ -1543,11 +1589,26 @@ class GeoPipeline:
         list[int],
         list[dict],
         list[list[str]],
+        list[float],
     ]:
         """Run one hierarchy level for a batch and update key_evidence in place."""
         n = len(images)
         hyp_messages = [_hypothesize_prompt(images[i], level, contexts[i]) for i in range(n)]
         hyp_responses = self.mllm.batch_generate(hyp_messages)
+
+        # Fine-level sample-N agreement (self-consistency confidence). Only fires
+        # at configured fine levels when FINE_SAMPLE_N>1. This is a SIDE signal:
+        # it re-samples the same hypothesize prompt N times purely to measure how
+        # stable the top name is; it does NOT feed the posterior (that still comes
+        # from the single batch_generate above), so DST/POMDP behaviour is
+        # unchanged. 1.0 everywhere = signal off.
+        name_agreements = [1.0] * n
+        if FINE_SAMPLE_N > 1 and level.lower() in FINE_SAMPLE_LEVELS:
+            sampled = self.mllm.batch_sample_n(hyp_messages, n=FINE_SAMPLE_N)
+            for i in range(n):
+                agreement, _ = _name_agreement(sampled[i], level)
+                name_agreements[i] = agreement
+
         cue_responses_by_cue = []
         if level == "country" and COUNTRY_CUE_ENSEMBLE:
             for _, cue_text in _COUNTRY_CUE_PROMPTS:
@@ -1746,6 +1807,7 @@ class GeoPipeline:
             steps,
             retrieval_diags,
             executed_sources,
+            name_agreements,
         )
 
     def predict_batch(self, images: list) -> list[dict]:
@@ -1782,6 +1844,7 @@ class GeoPipeline:
                 steps_subset,
                 retrieval_diags_subset,
                 task_sources_subset,
+                name_agreements_subset,
             ) = self._run_level_batch(
                 subset_images, level, subset_contexts, subset_key_evidence
             )
@@ -1806,6 +1869,9 @@ class GeoPipeline:
             task_sources_by_idx = {
                 idx: sources for idx, sources in zip(level_indices, task_sources_subset)
             }
+            name_agreement_by_idx = {
+                idx: agr for idx, agr in zip(level_indices, name_agreements_subset)
+            }
 
             # Replace: only regenerate the country candidate set when belief is
             # genuinely weak and nearly tied. Marginally unstable but plausible
@@ -1827,6 +1893,7 @@ class GeoPipeline:
                         repl_deltas,
                         repl_evidence,
                         repl_steps,
+                        _,
                         _,
                         _,
                     ) = self._run_level_batch(
@@ -1920,6 +1987,7 @@ class GeoPipeline:
                 results[i][f"{level}_posterior"] = posterior
                 results[i][f"{level}_stable"] = _stable_for_descent(posterior)
                 results[i][f"{level}_steps"] = steps_by_idx.get(i)
+                results[i][f"{level}_name_agreement"] = name_agreement_by_idx.get(i, 1.0)
 
                 if level == "country":
                     results[i]["country_visual_delta"] = visual_delta_by_idx.get(i, 0.0)

@@ -24,7 +24,7 @@ from models.mllm_client import MLLMClient
 from pipeline import GeoPipeline
 from data.yfcc4k_loader import YFCC4KDataset
 from country_aliases import COUNTRY_TO_CONTINENT, continent_of, canonicalize_country
-from config import EVAL_THRESHOLDS, YFCC4K_IMG_DIR, YFCC4K_GPS_CSV
+from config import EVAL_THRESHOLDS, YFCC4K_IMG_DIR, YFCC4K_GPS_CSV, FINE_SAMPLE_N, FINE_AGREEMENT_THR
 
 
 def haversine(lat1, lon1, lat2, lon2) -> float:
@@ -329,9 +329,23 @@ def evaluate(args):
             country_consistency = None
             # Hierarchical geocode: street → city → country. For street/city
             # try country-qualified queries before bare-name fallback.
+            #
+            # Fine-level sample-N agreement gate: when FINE_SAMPLE_N>1 the pipeline
+            # records "{level}_name_agreement" (self-consistency of the top name
+            # across N samples). If a street/city name is unstable (agreement
+            # below FINE_AGREEMENT_THR) we SKIP geocoding it and fall through to
+            # the next coarser level, ending at the country name — never the
+            # country centroid. With FINE_SAMPLE_N<=1 the field is 1.0 (absent)
+            # so the gate never fires and behaviour is identical to before.
+            gate_on = FINE_SAMPLE_N > 1
             for level in ["street", "city", "country"]:
                 name = pred.get(level)
                 if name and name != "Unknown":
+                    if gate_on and level in ("street", "city"):
+                        agreement = pred.get(f"{level}_name_agreement", 1.0)
+                        if agreement < FINE_AGREEMENT_THR:
+                            pred[f"{level}_gate_skipped"] = True
+                            continue
                     qualifier = pred_country if level in ("street", "city") else None
                     pred_coords, geocode_source, country_consistency = _geocode_level(
                         name,
