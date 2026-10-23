@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 import pandas as pd
@@ -90,6 +91,9 @@ def _patch_geoclip_transformers_compat(model) -> None:
 def build_cache(args) -> None:
     import torch
     from geoclip import GeoCLIP
+
+    if os.environ.get("GEOCLIP_DISABLE_CUDNN", "").lower() in {"1", "true", "yes"}:
+        torch.backends.cudnn.enabled = False
 
     img_dir = Path(args.img_dir)
     gps_csv = Path(args.gps_csv)
