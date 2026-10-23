@@ -1819,6 +1819,13 @@ class GeoPipeline:
         n = len(images)
         # per-image state
         results = [{"pomdp_policy": self.pomdp.policy_label} for _ in range(n)]
+        # Seed fine-level agreement defaults so the SIDE signal is always present
+        # even when an image is skip_finer'd (factcheck-reject / unstable parent)
+        # before reaching the level's collect-loop. Overwritten with the real
+        # sampled value at the collect-loop when the gate fires.
+        for _r in results:
+            for _lvl in FINE_SAMPLE_LEVELS:
+                _r[f"{_lvl}_name_agreement"] = 1.0
         key_evidence = [[] for _ in range(n)]
         contexts = [""] * n
         skip_finer = [False] * n
