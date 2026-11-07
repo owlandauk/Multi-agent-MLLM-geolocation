@@ -231,7 +231,7 @@ POMDP_MARGIN_GAIN_WEIGHT = float(os.environ.get("POMDP_MARGIN_GAIN_WEIGHT", "0.5
 EVAL_THRESHOLDS = [1, 25, 200, 750, 2500]
 
 # ── Generation ────────────────────────────────────────────────────────────────
-MAX_NEW_TOKENS         = 384    # default cap (used by hypothesize)
+MAX_NEW_TOKENS         = 768    # default cap (used by hypothesize); 384 truncated reasoning-first JSON (10.7% of 32B bare lost)
 SL_MAX_NEW_TOKENS      = 48     # SL responses are tiny: "Rating: X / Confidence: Y / one sentence"
 VERIFY_MAX_NEW_TOKENS  = 160    # verify observation: a paragraph is plenty
 VERIFY_SUPPORT_FORMAT = os.environ.get("VERIFY_SUPPORT_FORMAT", "0").lower() in {
