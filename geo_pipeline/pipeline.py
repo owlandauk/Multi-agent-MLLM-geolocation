@@ -981,11 +981,10 @@ def _georeasoner_country_prompt(image: Image.Image) -> list:
             "content": [
                 {"type": "image", "image": image},
                 {"type": "text", "text": (
-                    "According to the content of the image, deduce in which country and city "
-                    "the image is most likely located. Output ONLY a single-line JSON object "
-                    "with the answer FIRST, then the reason, e.g. "
-                    '{"country":"", "city":"", "reasons":""}. '
-                    "Put country and city before reasons so the answer is never cut off."
+                    "According to the content of the image, please think step by step and deduce "
+                    "in which country and city the image is most likely located and give the "
+                    "most important reason. Output in JSON format, e.g. "
+                    '{"country":"", "city":"", "reasons":""}.'
                 )},
             ],
         }
