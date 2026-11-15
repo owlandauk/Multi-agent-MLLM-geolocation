@@ -126,10 +126,11 @@ def main():
     except (FileNotFoundError, json.JSONDecodeError):
         cache = {}
 
-    # per-record GT + the three convention distances
+    # per-record GT + the convention distances
     full_dists = []        # (1) full-set baseline
     swap_dists = []        # (2) centroid->capital swap
     excl_dists = []        # (3) non-localizable exclusion
+    both_dists = []        # (4) capital-swap AND non-localizable exclusion stacked
     n_abstain = 0
     n_centroid = 0
 
@@ -149,15 +150,19 @@ def main():
         if rec.get("geocode_source") == "country":
             n_centroid += 1
             cap = capital_point(rec.get("pred_country"), cache)
-            swap_dists.append(haversine(gt_lat, gt_lon, cap[0], cap[1]) if cap else d_full)
+            d_swap = haversine(gt_lat, gt_lon, cap[0], cap[1]) if cap else d_full
         else:
-            swap_dists.append(d_full)
+            d_swap = d_full
+        swap_dists.append(d_swap)
 
         # (3) non-localizable exclusion: drop abstentions from denominator
-        if is_abstention(rec):
+        abstained = is_abstention(rec)
+        if abstained:
             n_abstain += 1
         else:
             excl_dists.append(d_full)
+            # (4) stacked: capital-swapped distance on the localizable subset
+            both_dists.append(d_swap)
 
     with open(args.cache, "w") as f:
         json.dump(cache, f)
@@ -165,6 +170,7 @@ def main():
     full_acc, n_full = accuracy_table(full_dists)
     swap_acc, n_swap = accuracy_table(swap_dists)
     excl_acc, n_excl = accuracy_table(excl_dists)
+    both_acc, n_both = accuracy_table(both_dists)
 
     print(f"\nrecords={len(recs)}  centroid-fallbacks={n_centroid}  "
           f"non-localizable(abstention)={n_abstain}\n")
@@ -180,12 +186,14 @@ def main():
     row("(1) full", full_acc, n_full)
     row("(2) capital", swap_acc, n_swap)
     row("(3) excl-NL", excl_acc, n_excl)
+    row("(4) cap+excl", both_acc, n_both)
 
     print("\ncountry@750 convention spread: "
           f"full={full_acc[750]:.2f}  capital={swap_acc[750]:.2f}  "
-          f"excl-NL={excl_acc[750]:.2f}  "
+          f"excl-NL={excl_acc[750]:.2f}  cap+excl={both_acc[750]:.2f}  "
           f"(Δ capital={swap_acc[750]-full_acc[750]:+.2f}, "
-          f"Δ excl-NL={excl_acc[750]-full_acc[750]:+.2f})")
+          f"Δ excl-NL={excl_acc[750]-full_acc[750]:+.2f}, "
+          f"Δ stacked={both_acc[750]-full_acc[750]:+.2f})")
 
 
 if __name__ == "__main__":
