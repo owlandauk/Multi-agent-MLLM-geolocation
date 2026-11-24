@@ -30,9 +30,33 @@ Run from inside geo_pipeline/ (only needs the two JSONs; no geocoder).
 import argparse
 import json
 import math
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+try:
+    from country_aliases import canonicalize_country  # noqa: E402
+except Exception:  # pragma: no cover - fallback if import path differs
+    def canonicalize_country(name):
+        return (name or "").strip().lower() or None
 
 THRESHOLDS = [1, 25, 200, 750, 2500]
-TAUS = [250, 500, 750, 1000, 2000, float("inf")]
+TAUS = [150, 250, 350, 500, 750, 1000, 2000, float("inf")]
+
+
+def _cross_country(pr: dict, br: dict) -> bool:
+    """True if the pipeline point and the bare point name DIFFERENT countries.
+
+    This is the A2 signature: the descent crossed into another country's city
+    while the bare answer stayed in (what is usually) the correct country.
+    Canonicalized so "USA"/"United States" etc. are treated as the same.
+    """
+    pc = canonicalize_country(pr.get("pred_country") or "")
+    bc = canonicalize_country(br.get("pred_country") or "")
+    if pc is None or bc is None:
+        return False
+    return pc != bc
 
 
 def haversine(lat1, lon1, lat2, lon2) -> float:
@@ -88,39 +112,50 @@ def main():
 
     print(f"\njoined records = {n}   bare@750 = {bare750:.2f}   bare@1 = {bare1:.2f}\n")
     hdr = "tau(km)".ljust(10) + "".join(f"{t:>9}" for t in THRESHOLDS) \
-        + "   gated  brk  fix   WIN?"
+        + "   gated  brk  fix  xcGate  xcFix   WIN?"
     print(hdr)
     print("-" * len(hdr))
 
-    # tau=inf == never gate == raw pipeline (reference row)
+    # tau=inf == never gate == raw pipeline (reference row).
+    # xc_gated = gated cases where pipeline & bare name DIFFERENT countries (the A2
+    #            signature: descent crossed into another country's city).
+    # xc_fix   = those cross-country gates that flipped a @750 miss into a hit.
     for tau in TAUS:
         gated_dists = []
-        n_gated = brk = fix = 0
+        n_gated = brk = fix = xc_gated = xc_fix = 0
         for pr, br, dd in joined:
             dp = pr.get("dist_km")      # pipeline (descended) distance to GT
             db = br.get("dist_km")      # bare distance to GT
             # gate: if descent moved the point > tau from bare point, fall back to bare
-            if dd is not None and dd > tau:
+            gated_now = dd is not None and dd > tau
+            if gated_now:
                 chosen = db
                 n_gated += 1
             else:
                 chosen = dp
             gated_dists.append(chosen)
             # break/fix vs bare at 750 (does the GATED result lose/gain vs bare?)
+            is_fix = False
             if db is not None and chosen is not None:
                 bh, gh = db <= 750, chosen <= 750
                 if bh and not gh:
                     brk += 1
                 elif gh and not bh:
                     fix += 1
+                    is_fix = True
+            if gated_now and _cross_country(pr, br):
+                xc_gated += 1
+                if is_fix:
+                    xc_fix += 1
         ga, _ = acc_table(gated_dists)
         win = "YES" if (ga[750] >= bare750 and ga[1] > bare1) else ""
         label = "inf(raw)" if tau == float("inf") else f"{int(tau)}"
         print(label.ljust(10)
               + "".join(f"{ga[t]:>8.2f}%" for t in THRESHOLDS)
-              + f"  {n_gated:>5} {brk:>4} {fix:>4}   {win}")
+              + f"  {n_gated:>5} {brk:>4} {fix:>4}  {xc_gated:>6} {xc_fix:>6}   {win}")
 
     print(f"\nWIN rule: @750 >= {bare750:.2f} AND @1 > {bare1:.2f}")
+    print("xcGate = cross-country gated (A2 signature); xcFix = those that fixed @750.")
 
 
 if __name__ == "__main__":

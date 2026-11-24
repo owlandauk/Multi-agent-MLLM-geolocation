@@ -18,7 +18,7 @@ from functools import lru_cache
 from pathlib import Path
 from tqdm import tqdm
 from geopy.geocoders import Nominatim
-from geopy.exc import GeocoderTimedOut, GeocoderRateLimited
+from geopy.exc import GeocoderTimedOut, GeocoderRateLimited, GeocoderQueryError
 
 from models.mllm_client import MLLMClient
 from pipeline import GeoPipeline
@@ -70,6 +70,8 @@ def geocode(location_name: str):
         pass
     except GeocoderRateLimited:
         time.sleep(5)
+    except GeocoderQueryError:
+        pass  # Nominatim 400 on malformed query (e.g. stochastic sample_n junk)
     return None
 
 
@@ -526,6 +528,39 @@ def evaluate(args):
         }, f, indent=2)
     print(f"\nSaved to {out}")
 
+    # ── Optional descent-distance gate (post-process, zero extra GPU) ──────────
+    # Structural fix for coarse-scale regression: if the descended pipeline point
+    # is > gate_tau km from this model's BARE DIRECT point, the descent "ran too
+    # far" -> fall back to the bare direct coordinate (NEVER a centroid; the
+    # centroid variant regressed -13.88, see apply_scale_gate_offline.py). Needs a
+    # separate bare results JSON for the same model+dataset. Off by default and
+    # byte-identical to the run above when --descent_gate is absent.
+    if args.descent_gate:
+        if not args.bare_results:
+            print("[descent_gate] --bare_results is required; skipping gate.")
+        else:
+            from apply_descent_gate import gate_records as _gate_records, load as _load_bare
+            from analyze_results import analyze as _analyze
+            bare_by_id = {r["photo_id"]: r for r in _load_bare(args.bare_results)}
+            gated, gstats = _gate_records(records, bare_by_id, args.gate_tau)
+            gated_out = out.with_name(out.stem + f"_gated_tau{int(args.gate_tau)}" + out.suffix)
+            with open(gated_out, "w") as f:
+                json.dump({"total": gstats["n_total"], "records": gated}, f, indent=2)
+            base_report = _analyze(records)
+            gated_report = _analyze(gated)
+            labels = {1: "Street<1", 25: "City<25", 200: "Region<200",
+                      750: "Country<750", 2500: "Cont<2500"}
+            print(f"\n[descent_gate] tau={args.gate_tau:g}  gated "
+                  f"{gstats['n_gated']}/{gstats['n_total']} fine->bare-direct "
+                  f"(no_bare_match={gstats['n_no_bare_match']} "
+                  f"null_coords={gstats['n_null_coords']})")
+            print(f"  {'threshold':<14}{'pipeline':>10}{'gated':>10}{'delta':>9}")
+            for thr in EVAL_THRESHOLDS:
+                b = float(base_report.get("accuracy", {}).get(str(thr), 0.0))
+                g = float(gated_report.get("accuracy", {}).get(str(thr), 0.0))
+                print(f"  {labels[thr]:<14}{b:>10.2f}{g:>10.2f}{g - b:>+9.2f}")
+            print(f"  Saved gated records to {gated_out}")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -609,5 +644,23 @@ if __name__ == "__main__":
         default=None,
         choices=("same_continent", "cross_continent", "unknown_visual_continent", "unknown"),
         help="Limit child geocode retries to specific visual-vs-retrieval country continent relations.",
+    )
+    parser.add_argument(
+        "--descent_gate",
+        action="store_true",
+        help="After the run, apply the descent-distance gate: if the descended point is "
+             ">--gate_tau km from this model's bare direct point, fall back to the bare "
+             "direct coordinate (never a centroid). Requires --bare_results. Off by default.",
+    )
+    parser.add_argument(
+        "--bare_results",
+        default=None,
+        help="Bare results JSON (same model+dataset) supplying the bare direct point for --descent_gate.",
+    )
+    parser.add_argument(
+        "--gate_tau",
+        type=float,
+        default=1000.0,
+        help="Descent-gate reject threshold in km (default 1000; 500 is the unified cross-model value).",
     )
     evaluate(parser.parse_args())
