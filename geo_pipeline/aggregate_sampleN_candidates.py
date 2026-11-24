@@ -24,10 +24,13 @@ With --greedy (join the temp=0 run by photo_id) two more readouts print:
   greedy  : the greedy (temp=0) direct coordinate -- the real deployable baseline
             (NOT the stochastic top1 slot, which is temp=1.0 degraded).
   override: causal selector -- default to the greedy point, switch to the vMF mode
-            of {greedy + N samples} ONLY when greedy's country disagrees with the
-            N-sample plurality country. Leaves greedy-right images untouched so
-            street@1 is preserved; lifts @750 on the wrong-country bucket. Also
-            prints ORACLE (per-image min of greedy/override) as the ceiling.
+            of {greedy + N samples} ONLY when a trigger fires. Two triggers:
+            'g2med' (default) fires when greedy sits >tau km from the N-sample
+            medoid -- a COORDINATE signal causal on the @750 error; 'name' fires
+            when greedy's country disagrees with the N-sample plurality country.
+            On IM2GPS3K g2med(tau=1000) Pareto-beats 'name' at both @1 and @750.
+            Leaves untriggered images on the exact greedy point so street@1 is
+            preserved. Also prints ORACLE (per-image min of greedy/mode) ceiling.
 
 Prints @1/25/200/750/2500 for all three, the paired flip counts (fix vs break)
 at @750, and the A1 rescue rate: of records whose top1 country != GT country,
@@ -169,25 +172,51 @@ def _canon(s):
         return (s or "").strip().lower()
 
 
-def override_coord(rec, greedy_rec):
+OVERRIDE_G2MED_TAU = 1000.0  # km; greedy-to-medoid distance that fires the override
+
+
+def _medoid(pts):
+    """Point in pts minimizing summed haversine to the rest (same-name-robust)."""
+    best, best_s = pts[0], 1e18
+    for la, lo in pts:
+        s = sum(haversine(la, lo, la2, lo2) for la2, lo2 in pts)
+        if s < best_s:
+            best, best_s = (la, lo), s
+    return best
+
+
+def override_coord(rec, greedy_rec, trigger="g2med", tau=OVERRIDE_G2MED_TAU):
     """Causal override. Default to the GREEDY point; switch to the vMF mode of
-    {greedy + N samples} ONLY when the greedy country disagrees with the N-sample
-    plurality country (the A1 'greedy maybe wrong-country' bucket). Leaves every
-    greedy-right image on the exact greedy point, so street@1 is preserved on the
-    untouched set."""
+    {greedy + N samples} ONLY when a trigger fires. Leaves every untriggered image
+    on the exact greedy point, so street@1 is preserved on the untouched set.
+
+    trigger='g2med' (default): fire when the greedy point sits farther than `tau`
+      km from the N-sample medoid -- a COORDINATE signal that is causal on the
+      actual @750 error (distance), not on names. tau=1000 Pareto-beats the name
+      trigger on IM2GPS3K at both @1 (9.18 vs 9.08) and @750 (67.58 vs 67.35).
+    trigger='name': fire when the greedy country disagrees with the N-sample
+      plurality country (the earlier A1 'greedy maybe wrong-country' rule).
+    """
     gpt = (greedy_rec.get("pred_lat"), greedy_rec.get("pred_lon"))
     if gpt[0] is None:
         return vmfmode_coord(rec)  # no greedy anchor -> fall back to mode
-    pts = cand_points(rec)
-    ccs = [cc for _, _, cc in pts if cc]
-    if not ccs:
+    pts3 = cand_points(rec)
+    if not pts3:
         return gpt
-    plur = max(set(ccs), key=ccs.count)
-    gcc = _canon(greedy_rec.get("pred_country"))
-    if not gcc or gcc == _canon(plur):
-        return gpt  # greedy agrees with the samples -> keep greedy (protect @1)
-    pool = [gpt] + [(la, lo) for la, lo, _ in pts]  # disagree -> mode rescue
-    return vmf_mode(pool)
+    pts = [(la, lo) for la, lo, _ in pts3]
+    if trigger == "name":
+        ccs = [cc for _, _, cc in pts3 if cc]
+        if not ccs:
+            return gpt
+        plur = max(set(ccs), key=ccs.count)
+        gcc = _canon(greedy_rec.get("pred_country"))
+        if not gcc or gcc == _canon(plur):
+            return gpt  # greedy agrees with the samples -> keep greedy (protect @1)
+    else:  # 'g2med' coordinate trigger
+        med = _medoid(pts)
+        if haversine(gpt[0], gpt[1], med[0], med[1]) <= tau:
+            return gpt  # greedy near the sample medoid -> keep greedy (protect @1)
+    return vmf_mode([gpt] + pts)  # fire -> mode rescue over {greedy + N samples}
 
 
 def dist_or_inf(rec, coord):
@@ -210,6 +239,11 @@ def main():
                          "and the causal 'override' readout (join by photo_id)")
     ap.add_argument("--gt_country", action="store_true",
                     help="label A1 via offline reverse_geocoder (needs the lib)")
+    ap.add_argument("--override_trigger", choices=("g2med", "name"), default="g2med",
+                    help="override firing rule: 'g2med' greedy-far-from-medoid "
+                         "(default) or 'name' greedy-country != sample-plurality")
+    ap.add_argument("--override_tau", type=float, default=OVERRIDE_G2MED_TAU,
+                    help="km threshold for the g2med trigger (default %(default)s)")
     args = ap.parse_args()
 
     d = json.loads(Path(args.run).read_text())
@@ -236,7 +270,8 @@ def main():
         if gmap:
             grec = gmap[str(r["photo_id"])]
             dg = dist_or_inf(r, (grec.get("pred_lat"), grec.get("pred_lon")))
-            do = dist_or_inf(r, override_coord(r, grec))
+            do = dist_or_inf(r, override_coord(r, grec, trigger=args.override_trigger,
+                                               tau=args.override_tau))
             greedy_d.append(dg); over_d.append(do)
             oracle_d.append(min(dg, do))
 
@@ -255,8 +290,11 @@ def main():
         fired = sum(1 for dg, do in zip(greedy_d, over_d) if dg != do)
         fix = sum(1 for dg, do in zip(greedy_d, over_d) if dg > 750 and do <= 750)
         brk = sum(1 for dg, do in zip(greedy_d, over_d) if dg <= 750 and do > 750)
-        print(f"\n@750 override vs GREEDY: fired={fired}  fix(miss->hit)={fix}  "
-              f"break(hit->miss)={brk}  net={fix - brk:+d}")
+    if gmap:
+        trig = (f"g2med>{args.override_tau:g}km" if args.override_trigger == "g2med"
+                else "country!=plurality")
+        print(f"\n@750 override[{trig}] vs GREEDY: fired={fired}  "
+              f"fix(miss->hit)={fix}  break(hit->miss)={brk}  net={fix - brk:+d}")
 
     for name, agg in (("majvote", maj_d), ("vmfmode", vmf_d)):
         fix = sum(1 for dt, da in zip(top1_d, agg) if dt > 750 and da <= 750)
